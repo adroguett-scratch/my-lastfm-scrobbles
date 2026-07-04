@@ -3,7 +3,10 @@ name: Create Database
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch:  # Permite ejecutar manualmente
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   create-db:
