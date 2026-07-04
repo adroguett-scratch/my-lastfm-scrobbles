@@ -11,32 +11,26 @@ permissions:
 jobs:
   create-db:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-    
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    
-    - name: Create data directory
-      run: mkdir -p data
-    
-    - name: Run database creation script
-      run: |
-        python src/create_db.py
-    
-    - name: List files to verify
-      run: |
-        ls -la data/
-        file data/my_scrobbles.db || echo "El archivo no existe"
-    
-    - name: Commit and push database
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add data/my_scrobbles.db
-        git diff --staged --quiet || git commit -m "Crear base de datos inicial con tabla Artist [skip ci]"
-        git push
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Create data directory
+        run: mkdir -p data
+
+      - name: Run database creation script
+        run: python src/create_db.py
+
+      - name: Commit and push database
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/my_scrobbles.db
+          git diff --staged --quiet || git commit -m "Crear base de datos inicial con tabla Artist [skip ci]"
+          git push
