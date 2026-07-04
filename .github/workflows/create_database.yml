@@ -1,15 +1,15 @@
-name: Update Artists from Last.fm
+name: Create Database
 
 on:
-  schedule:
-    - cron: '0 12 * * *'  # Todos los días a las 12:00 UTC
+  push:
+    branches: [ main, master ]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  update-artists:
+  create-db:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,18 +21,16 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          pip install requests
+      - name: Create data directory
+        run: mkdir -p data
 
-      - name: Run download artists script
-        run: |
-          python src/download_artists.py
+      - name: Run database creation script
+        run: python src/create_db.py
 
-      - name: Commit and push database changes
+      - name: Commit and push database
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add data/my_scrobbles.db
-          git diff --staged --quiet || git commit -m "Actualizar artistas desde Last.fm [skip ci]"
+          git diff --staged --quiet || git commit -m "Crear base de datos inicial con tabla Artist [skip ci]"
           git push
