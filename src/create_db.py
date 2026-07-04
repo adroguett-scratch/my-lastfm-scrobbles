@@ -52,24 +52,17 @@ def crear_base_datos():
     else:
         print("ℹ️ Änglagård ya existe en la base de datos")
     
-    # 4. Verificar que el artista se insertó
-    cursor.execute('SELECT * FROM Artist')
-    artistas = cursor.fetchall()
-    
-    # 5. Guardar cambios
+    # 4. Guardar cambios
     conn.commit()
+    
+    # 5. Mostrar resumen
+    cursor.execute('SELECT COUNT(*) FROM Artist')
+    total = cursor.fetchone()[0]
     
     print(f"\n✅ Base de datos creada con éxito")
     print(f"📁 Ubicación: {DB_PATH}")
     print(f"📋 Tabla 'Artist' creada con 5 campos de género")
-    print(f"🎵 Total artistas en BD: {len(artistas)}")
-    
-    # Mostrar los artistas
-    if artistas:
-        print("\n📊 ARTISTAS GUARDADOS:")
-        for artista in artistas:
-            print(f"  - ID: {artista[0]}, Nombre: {artista[1]}")
-            print(f"    Géneros: {artista[2]}, {artista[3]}, {artista[4]}, {artista[5]}, {artista[6]}")
+    print(f"🎵 Total artistas en BD: {total}")
     
     conn.close()
 
