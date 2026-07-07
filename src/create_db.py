@@ -4,9 +4,14 @@ import sys
 import time
 import requests
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Carga variables desde un archivo .env si existe (útil para correr en local).
+# En GitHub Actions esto no hace nada si no hay .env, y se usan los Secrets normalmente.
+load_dotenv()
 
 # Ruta de la base de datos
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'my_scrobbles.db')
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', '1_artist.db')
 
 # --- Credenciales (deben venir de variables de entorno / GitHub Secrets) ---
 LASTFM_API_KEY = os.environ.get('LASTFM_API_KEY')
