@@ -1,7 +1,6 @@
 import sqlite3
 import os
 import sys
-import time
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
@@ -18,16 +17,10 @@ LASTFM_API_KEY = os.environ.get('LASTFM_API_KEY')
 LASTFM_USER = os.environ.get('LASTFM_USER')
 
 LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/'
-MUSICBRAINZ_API_URL = 'https://musicbrainz.org/ws/2/artist/'
-
-# MusicBrainz exige un User-Agent identificable y máx. ~1 request/segundo
-HEADERS_MB = {
-    'User-Agent': 'MyScrobblesDBBot/1.0 (contacto@example.com)'
-}
 
 
 def crear_esquema(conn):
-    """Crea la tabla Artist (con columna de nacionalidad) y su índice."""
+    """Crea la tabla Artist y su índice."""
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -39,18 +32,11 @@ def crear_esquema(conn):
             genre_3     TEXT,
             genre_4     TEXT,
             genre_5     TEXT,
-            nationality TEXT,
             last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_artist_name ON Artist (name)')
-
-    # Si la tabla ya existía de una versión anterior sin la columna, la añadimos
-    cursor.execute("PRAGMA table_info(Artist)")
-    columnas = [fila[1] for fila in cursor.fetchall()]
-    if 'nationality' not in columnas:
-        cursor.execute('ALTER TABLE Artist ADD COLUMN nationality TEXT')
 
     conn.commit()
 
@@ -103,52 +89,20 @@ def obtener_generos_lastfm(nombre_artista):
     return nombres
 
 
-def obtener_nacionalidad_musicbrainz(nombre_artista):
-    """Busca el artista en MusicBrainz y devuelve su país/área de origen, si existe."""
-    params = {
-        'query': f'artist:{nombre_artista}',
-        'fmt': 'json',
-        'limit': 1
-    }
-
-    try:
-        resp = requests.get(MUSICBRAINZ_API_URL, params=params, headers=HEADERS_MB, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        artistas = data.get('artists', [])
-
-        if not artistas:
-            return None
-
-        artista = artistas[0]
-        # 'area' o 'begin-area' suelen contener el país/ciudad de origen
-        area = artista.get('area') or artista.get('begin-area')
-        if area:
-            return area.get('name')
-        return None
-    except Exception as e:
-        print(f"  ⚠️ No se pudo obtener nacionalidad para '{nombre_artista}': {e}")
-        return None
-    finally:
-        # Respeta el límite de MusicBrainz (~1 request/seg)
-        time.sleep(1)
-
-
-def guardar_artista(conn, nombre, generos, nacionalidad):
+def guardar_artista(conn, nombre, generos):
     """Inserta o actualiza un artista en la tabla."""
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO Artist (name, genre, genre_2, genre_3, genre_4, genre_5, nationality, last_update)
-        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO Artist (name, genre, genre_2, genre_3, genre_4, genre_5, last_update)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(name) DO UPDATE SET
             genre = excluded.genre,
             genre_2 = excluded.genre_2,
             genre_3 = excluded.genre_3,
             genre_4 = excluded.genre_4,
             genre_5 = excluded.genre_5,
-            nationality = COALESCE(excluded.nationality, Artist.nationality),
             last_update = CURRENT_TIMESTAMP
-    ''', (nombre, *generos, nacionalidad))
+    ''', (nombre, *generos))
     conn.commit()
 
 
@@ -179,8 +133,7 @@ def crear_base_datos():
     for i, nombre in enumerate(artistas, start=1):
         print(f"  [{i}/{len(artistas)}] {nombre}")
         generos = obtener_generos_lastfm(nombre)
-        nacionalidad = obtener_nacionalidad_musicbrainz(nombre)
-        guardar_artista(conn, nombre, generos, nacionalidad)
+        guardar_artista(conn, nombre, generos)
 
     cursor = conn.cursor()
     cursor.execute('SELECT COUNT(*) FROM Artist')
@@ -188,7 +141,7 @@ def crear_base_datos():
 
     print(f"\n✅ Base de datos actualizada con éxito")
     print(f"📁 Ubicación: {DB_PATH}")
-    print(f"📋 Tabla 'Artist' con géneros + nacionalidad")
+    print(f"📋 Tabla 'Artist' con géneros")
     print(f"🎵 Total artistas en BD: {total}")
 
     conn.close()
