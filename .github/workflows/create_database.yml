@@ -37,6 +37,6 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add data/my_scrobbles.db
+          git add data/1_artist.db
           git diff --staged --quiet || git commit -m "Actualizar base de datos con artistas de Last.fm [skip ci]"
           git push
