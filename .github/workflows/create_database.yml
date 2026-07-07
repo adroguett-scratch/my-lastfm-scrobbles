@@ -21,10 +21,16 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install dependencies
+        run: pip install requests
+
       - name: Create data directory
         run: mkdir -p data
 
       - name: Run database creation script
+        env:
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_USER: ${{ secrets.LASTFM_USER }}
         run: python src/create_db.py
 
       - name: Commit and push database
@@ -32,5 +38,5 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add data/my_scrobbles.db
-          git diff --staged --quiet || git commit -m "Crear base de datos inicial con tabla Artist [skip ci]"
+          git diff --staged --quiet || git commit -m "Actualizar base de datos con artistas de Last.fm [skip ci]"
           git push
