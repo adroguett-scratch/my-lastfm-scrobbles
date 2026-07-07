@@ -32,11 +32,21 @@ def crear_esquema(conn):
             genre_3     TEXT,
             genre_4     TEXT,
             genre_5     TEXT,
+            genre_6     TEXT,
+            genre_7     TEXT,
             last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_artist_name ON Artist (name)')
+
+    # Si la tabla ya existía de una versión anterior con solo 5 géneros, agregamos las nuevas columnas
+    cursor.execute("PRAGMA table_info(Artist)")
+    columnas = [fila[1] for fila in cursor.fetchall()]
+    if 'genre_6' not in columnas:
+        cursor.execute('ALTER TABLE Artist ADD COLUMN genre_6 TEXT')
+    if 'genre_7' not in columnas:
+        cursor.execute('ALTER TABLE Artist ADD COLUMN genre_7 TEXT')
 
     conn.commit()
 
@@ -64,7 +74,7 @@ def obtener_top_artistas(limit=50):
 
 
 def obtener_generos_lastfm(nombre_artista):
-    """Obtiene hasta 5 tags (géneros) de un artista desde Last.fm."""
+    """Obtiene hasta 7 tags (géneros) de un artista desde Last.fm."""
     params = {
         'method': 'artist.gettoptags',
         'artist': nombre_artista,
@@ -77,13 +87,13 @@ def obtener_generos_lastfm(nombre_artista):
         resp.raise_for_status()
         data = resp.json()
         tags = data.get('toptags', {}).get('tag', [])
-        nombres = [t['name'] for t in tags[:5]]
+        nombres = [t['name'] for t in tags[:7]]
     except Exception as e:
         print(f"  ⚠️ No se pudieron obtener géneros para '{nombre_artista}': {e}")
         nombres = []
 
-    # Rellenar hasta 5 posiciones con None
-    while len(nombres) < 5:
+    # Rellenar hasta 7 posiciones con None
+    while len(nombres) < 7:
         nombres.append(None)
 
     return nombres
@@ -93,14 +103,16 @@ def guardar_artista(conn, nombre, generos):
     """Inserta o actualiza un artista en la tabla."""
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO Artist (name, genre, genre_2, genre_3, genre_4, genre_5, last_update)
-        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO Artist (name, genre, genre_2, genre_3, genre_4, genre_5, genre_6, genre_7, last_update)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(name) DO UPDATE SET
             genre = excluded.genre,
             genre_2 = excluded.genre_2,
             genre_3 = excluded.genre_3,
             genre_4 = excluded.genre_4,
             genre_5 = excluded.genre_5,
+            genre_6 = excluded.genre_6,
+            genre_7 = excluded.genre_7,
             last_update = CURRENT_TIMESTAMP
     ''', (nombre, *generos))
     conn.commit()
