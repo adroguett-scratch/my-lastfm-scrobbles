@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Database path
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', '1_artist.db')
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', '0_artist_raw.db')
 
 # --- Credentials ---
 LASTFM_API_KEY = os.environ.get('LASTFM_API_KEY')
@@ -223,9 +223,7 @@ def create_database():
     new_count = 0
 
     for i, name in enumerate(artists, start=1):
-        # ============================================================
-        # IMPORTANT: Skip if artist already exists in the database
-        # ============================================================
+        # Skip if artist already exists in the database
         if artist_exists(conn, name):
             print(f"  [{i}/{len(artists)}] {name} ⏭️  Already exists. Skipping.")
             skipped_count += 1
