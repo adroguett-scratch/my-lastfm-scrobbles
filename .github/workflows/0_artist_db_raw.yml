@@ -1,4 +1,4 @@
-name: 0- Update Artists from Last.fm
+name: 0. Update Artists from Last.fm
 
 on:
   schedule:
