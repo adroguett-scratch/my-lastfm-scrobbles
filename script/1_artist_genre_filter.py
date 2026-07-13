@@ -17,9 +17,9 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'genre_
 from genre_dict import GENRE_DICT, GENERIC_TAGS
 from nationality_dict import NATIONALITY_TAGS
 
-# Database path
+# Database paths
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', '0_artist_raw.db')
-OUTPUT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', '1_artist_filtered.db')
+OUTPUT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), '1_artist_genres.db')
 
 
 # ============================================
@@ -249,9 +249,8 @@ def process_and_filter_artists():
     raw_conn = sqlite3.connect(DB_PATH)
     raw_conn.row_factory = sqlite3.Row
     
-    # Connect to output database
+    # Connect to output database (in current directory)
     print(f"📂 Writing to: {OUTPUT_DB_PATH}")
-    os.makedirs(os.path.dirname(OUTPUT_DB_PATH), exist_ok=True)
     out_conn = sqlite3.connect(OUTPUT_DB_PATH)
     
     # Create filtered schema
