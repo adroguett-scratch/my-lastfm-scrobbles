@@ -1,4 +1,4 @@
-name: 0_Update Artists from Last.fm
+name: Update Artists from Last.fm
 
 on:
   schedule:
@@ -37,9 +37,9 @@ jobs:
         run: |
           python script/0_artist_db_raw.py
 
-      - name: Upload database as artifact (optional)
+      - name: Upload database as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: artist-database
-          path: data/1_artist.db
+          name: artist-database-raw
+          path: data/0_artist_raw.db
           retention-days: 7
