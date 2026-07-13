@@ -1,9 +1,9 @@
 name: Create Database
 
-on:
-  push:
-    branches: [ main, master ]
-  workflow_dispatch:
+# on:
+#  push:
+#    branches: [ main, master ]
+#  workflow_dispatch:
 
 permissions:
   contents: write
@@ -31,7 +31,7 @@ jobs:
         env:
           LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
           LASTFM_USER: ${{ secrets.LASTFM_USER }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}  # ⬅️ AÑADE ESTA LÍNEA
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python src/create_db.py
 
       - name: Commit and push database
