@@ -1,0 +1,41 @@
+name: 1. Filter Artist Genres
+
+on:
+  schedule:
+    # Run daily at 5:15 AM UTC (after raw update)
+    - cron: '15 5 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: read  # Only read access (no push)
+
+jobs:
+  filter-artists:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Create data directory
+        run: mkdir -p data
+
+      - name: Run genre filter script
+        run: |
+          python script/1_artist_genre_filter.py
+
+      - name: Upload filtered database as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: artist-database-filtered
+          path: data/1_artist_filtered.db
+          retention-days: 7
