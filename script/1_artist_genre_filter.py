@@ -5,6 +5,7 @@ This module provides functionality to filter and normalize genre tags for artist
 using external dictionaries located in the genre_filter_dictionaries directory.
 """
 
+import sqlite3
 import os
 import sys
 from datetime import datetime
@@ -15,6 +16,10 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'genre_
 
 from genre_dict import GENRE_DICT, GENERIC_TAGS
 from nationality_dict import NATIONALITY_TAGS
+
+# Database path
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', '0_artist_raw.db')
+OUTPUT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', '1_artist_filtered.db')
 
 
 # ============================================
@@ -44,89 +49,39 @@ ARTIST_KEYWORDS = {
 # ============================================
 
 def is_nationality_tag(tag: str) -> bool:
-    """
-    Check if a tag represents a nationality.
-    
-    Args:
-        tag: The tag to check
-        
-    Returns:
-        True if the tag is a nationality, False otherwise
-    """
+    """Check if a tag represents a nationality."""
     tag_lower = tag.lower()
     return tag_lower in NATIONALITY_TAGS
 
 
 def is_decade_tag(tag: str) -> bool:
-    """
-    Check if a tag represents a decade.
-    
-    Args:
-        tag: The tag to check
-        
-    Returns:
-        True if the tag is a decade, False otherwise
-    """
+    """Check if a tag represents a decade."""
     tag_lower = tag.lower()
     return tag_lower in DECADE_TAGS
 
 
 def is_generic_tag(tag: str) -> bool:
-    """
-    Check if a tag is too generic (e.g., 'rock', 'pop', 'metal').
-    
-    Args:
-        tag: The tag to check
-        
-    Returns:
-        True if the tag is generic, False otherwise
-    """
+    """Check if a tag is too generic (e.g., 'rock', 'pop', 'metal')."""
     tag_lower = tag.lower()
     return tag_lower in GENERIC_TAGS
 
 
 def is_artist_keyword(tag: str) -> bool:
-    """
-    Check if a tag contains artist keywords (e.g., 'band', 'group').
-    
-    Args:
-        tag: The tag to check
-        
-    Returns:
-        True if the tag contains artist keywords, False otherwise
-    """
+    """Check if a tag contains artist keywords (e.g., 'band', 'group')."""
     tag_lower = tag.lower()
     return any(keyword in tag_lower for keyword in ARTIST_KEYWORDS)
 
 
 def normalize_genre(tag: str) -> str:
-    """
-    Normalize a genre tag using the GENRE_DICT.
-    
-    Args:
-        tag: The raw genre tag
-        
-    Returns:
-        The normalized genre, or the original if not found
-    """
+    """Normalize a genre tag using the GENRE_DICT."""
     tag_lower = tag.lower()
-    
     if tag_lower in GENRE_DICT:
         return GENRE_DICT[tag_lower]
-    
     return tag
 
 
 def should_keep_tag(tag: str) -> bool:
-    """
-    Determine if a tag should be kept after filtering.
-    
-    Args:
-        tag: The tag to evaluate
-        
-    Returns:
-        True if the tag should be kept, False otherwise
-    """
+    """Determine if a tag should be kept after filtering."""
     if not tag or not tag.strip():
         return False
     
@@ -160,12 +115,6 @@ def filter_and_normalize_genres(raw_tags: List[str]) -> List[str]:
     2. Filter out unwanted tags (nationality, decade, generic, artist keywords)
     3. Remove duplicates (case-insensitive)
     4. Return unique, clean genres
-    
-    Args:
-        raw_tags: List of raw genre tags from Last.fm
-        
-    Returns:
-        List of filtered and normalized genres
     """
     if not raw_tags:
         return []
@@ -194,202 +143,169 @@ def filter_and_normalize_genres(raw_tags: List[str]) -> List[str]:
 
 
 def get_top_n_genres(raw_tags: List[str], n: int = 5) -> List[str]:
-    """
-    Get the top N genres from a list of raw tags.
-    
-    Args:
-        raw_tags: List of raw genre tags from Last.fm
-        n: Number of genres to return (default: 5)
-        
-    Returns:
-        List of top N filtered and normalized genres
-    """
+    """Get the top N genres from a list of raw tags."""
     filtered = filter_and_normalize_genres(raw_tags)
     return filtered[:n]
 
 
 # ============================================
-# ARTIST RECORD FUNCTIONS
+# DATABASE FUNCTIONS
 # ============================================
 
-def create_artist_record(
-    artist_id: int,
-    name: str,
-    nationality: str,
-    genres: List[str],
-    entry_date: Optional[datetime] = None
-) -> Tuple[int, str, str, List[str], str]:
-    """
-    Create a standardized artist record.
+def get_raw_artists(conn):
+    """Get all artists with their raw genres from the raw database."""
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id_artist, name, nationality,
+               genre_1, genre_2, genre_3, genre_4, genre_5,
+               genre_6, genre_7, genre_8, genre_9, genre_10,
+               genre_11, genre_12, genre_13, genre_14, genre_15
+        FROM Artist
+    ''')
     
-    Args:
-        artist_id: Unique identifier for the artist
-        name: Artist name
-        nationality: Artist nationality
-        genres: List of genres (already filtered and normalized)
-        entry_date: Date the artist was added (defaults to current time)
-        
-    Returns:
-        Tuple containing (id, name, nationality, genres, entry_date)
-    """
-    if entry_date is None:
-        entry_date = datetime.now()
+    artists = []
+    for row in cursor.fetchall():
+        artist_id = row[0]
+        name = row[1]
+        nationality = row[2]
+        # Collect non-None genres
+        raw_genres = []
+        for i in range(3, 18):  # genre_1 to genre_15
+            if row[i] is not None:
+                raw_genres.append(row[i])
+        artists.append({
+            'id': artist_id,
+            'name': name,
+            'nationality': nationality,
+            'raw_genres': raw_genres
+        })
     
-    # Ensure we have exactly 5 genres (pad with empty strings if needed)
-    while len(genres) < 5:
-        genres.append('')
-    
-    return (artist_id, name, nationality, genres[:5], entry_date.isoformat())
+    return artists
 
 
-def format_artist_record(record: Tuple[int, str, str, List[str], str]) -> str:
-    """
-    Format an artist record for display.
+def create_filtered_schema(conn):
+    """Create the filtered Artist table."""
+    cursor = conn.cursor()
     
-    Args:
-        record: Tuple containing (id, name, nationality, genres, entry_date)
-        
-    Returns:
-        Formatted string representation of the artist record
-    """
-    artist_id, name, nationality, genres, entry_date = record
-    
-    genres_str = ', '.join([g for g in genres if g])
-    if not genres_str:
-        genres_str = 'No genres'
-    
-    return (
-        f"ID: {artist_id}\n"
-        f"Name: {name}\n"
-        f"Nationality: {nationality}\n"
-        f"Genres: {genres_str}\n"
-        f"Entry Date: {entry_date}\n"
-    )
-
-
-# ============================================
-# BATCH PROCESSING FUNCTIONS
-# ============================================
-
-def process_artist_genres(
-    artist_name: str,
-    raw_genres: List[str],
-    nationality: str = 'Unknown',
-    artist_id: Optional[int] = None
-) -> Tuple[int, str, str, List[str], str]:
-    """
-    Process an artist's genres and create a standardized record.
-    
-    Args:
-        artist_name: Name of the artist
-        raw_genres: Raw genre tags from Last.fm
-        nationality: Artist nationality
-        artist_id: Optional artist ID (will be auto-generated if not provided)
-        
-    Returns:
-        Artist record tuple (id, name, nationality, genres, entry_date)
-    """
-    # Filter and normalize genres
-    clean_genres = filter_and_normalize_genres(raw_genres)
-    
-    # Generate ID if not provided
-    if artist_id is None:
-        artist_id = hash(artist_name) % 1000000
-    
-    # Create and return record
-    return create_artist_record(
-        artist_id=artist_id,
-        name=artist_name,
-        nationality=nationality,
-        genres=clean_genres
-    )
-
-
-def process_artist_batch(
-    artists_data: List[Tuple[str, List[str], str]]
-) -> List[Tuple[int, str, str, List[str], str]]:
-    """
-    Process a batch of artists and return their records.
-    
-    Args:
-        artists_data: List of tuples (artist_name, raw_genres, nationality)
-        
-    Returns:
-        List of artist records
-    """
-    records = []
-    
-    for idx, (name, raw_genres, nationality) in enumerate(artists_data, start=1):
-        record = process_artist_genres(
-            artist_name=name,
-            raw_genres=raw_genres,
-            nationality=nationality,
-            artist_id=idx
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Artist (
+            id_artist   INTEGER PRIMARY KEY,
+            name        TEXT    NOT NULL UNIQUE,
+            nationality TEXT,
+            genre_1     TEXT,
+            genre_2     TEXT,
+            genre_3     TEXT,
+            genre_4     TEXT,
+            genre_5     TEXT,
+            last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-        records.append(record)
+    ''')
     
-    return records
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_artist_name_filtered ON Artist (name)')
+    conn.commit()
+
+
+def save_filtered_artist(conn, artist_id, name, nationality, genres):
+    """Save a filtered artist to the database."""
+    # Pad genres to exactly 5
+    while len(genres) < 5:
+        genres.append(None)
+    
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO Artist (id_artist, name, nationality, genre_1, genre_2, genre_3, genre_4, genre_5, last_update)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ''', (artist_id, name, nationality, genres[0], genres[1], genres[2], genres[3], genres[4]))
+    conn.commit()
+
+
+def get_filtered_stats(conn):
+    """Get statistics from the filtered database."""
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM Artist')
+    total = cursor.fetchone()[0]
+    return total
 
 
 # ============================================
-# MAIN FUNCTION (FOR TESTING)
+# MAIN PROCESSING FUNCTION
 # ============================================
 
-def main():
-    """
-    Test the genre filtering functionality.
-    """
-    # Example raw genres from Last.fm
-    test_artists = [
-        (
-            "Pink Floyd",
-            [
-                "progressive rock", "psychedelic rock", "classic rock",
-                "rock", "psychedelic", "70s", "british", "art rock"
-            ],
-            "United Kingdom"
-        ),
-        (
-            "Tool",
-            [
-                "progressive metal", "progressive rock", "metal",
-                "alternative", "rock", "american", "90s"
-            ],
-            "United States"
-        ),
-        (
-            "Änglagård",
-            [
-                "progressive rock", "symphonic prog", "swedish",
-                "instrumental", "progressive", "70s"
-            ],
-            "Sweden"
-        ),
-    ]
+def process_and_filter_artists():
+    """Process raw artists and generate filtered database."""
     
     print("=" * 60)
-    print("ARTIST GENRE FILTER TEST")
+    print("ARTIST GENRE FILTER")
     print("=" * 60)
     
-    for name, raw_genres, nationality in test_artists:
-        print(f"\n🎵 Processing: {name}")
-        print(f"   Raw genres: {raw_genres}")
+    # Check if raw database exists
+    if not os.path.exists(DB_PATH):
+        print(f"❌ Raw database not found: {DB_PATH}")
+        print("   Please run 0_artist_db_raw.py first.")
+        return
+    
+    # Connect to raw database
+    print(f"📂 Reading from: {DB_PATH}")
+    raw_conn = sqlite3.connect(DB_PATH)
+    raw_conn.row_factory = sqlite3.Row
+    
+    # Connect to output database
+    print(f"📂 Writing to: {OUTPUT_DB_PATH}")
+    os.makedirs(os.path.dirname(OUTPUT_DB_PATH), exist_ok=True)
+    out_conn = sqlite3.connect(OUTPUT_DB_PATH)
+    
+    # Create filtered schema
+    create_filtered_schema(out_conn)
+    
+    # Get all raw artists
+    artists = get_raw_artists(raw_conn)
+    print(f"🎵 Found {len(artists)} artists to process")
+    print("-" * 60)
+    
+    processed = 0
+    skipped = 0
+    
+    for artist in artists:
+        name = artist['name']
+        raw_genres = artist['raw_genres']
+        nationality = artist['nationality'] or 'Unknown'
         
+        # Filter and normalize genres
         clean_genres = filter_and_normalize_genres(raw_genres)
         
-        print(f"   Clean genres: {clean_genres}")
-        print(f"   Nationality: {nationality}")
+        # Get top 5 genres
+        top_genres = clean_genres[:5]
         
-        # Create a record
-        record = process_artist_genres(
-            artist_name=name,
-            raw_genres=raw_genres,
-            nationality=nationality
-        )
+        # Skip if no genres remain after filtering
+        if not top_genres:
+            print(f"⚠️  {name}: No genres after filtering (raw: {raw_genres})")
+            skipped += 1
+            continue
         
-        print("\n   📋 Record:")
-        print(f"      {format_artist_record(record)}")
+        # Save filtered artist
+        save_filtered_artist(out_conn, artist['id'], name, nationality, top_genres)
+        processed += 1
+        
+        print(f"✅ {name}: {top_genres}")
+    
+    # Commit and close
+    out_conn.commit()
+    
+    # Get statistics
+    total = get_filtered_stats(out_conn)
+    
+    print("-" * 60)
+    print(f"\n✅ Filtered database created successfully")
+    print(f"📁 Location: {OUTPUT_DB_PATH}")
+    print(f"📋 Table 'Artist' with filtered genres (top 5)")
+    print(f"🎵 Total artists in filtered DB: {total}")
+    print(f"   Processed: {processed}")
+    print(f"   Skipped (no genres): {skipped}")
+    print("=" * 60)
+    
+    raw_conn.close()
+    out_conn.close()
 
 
 if __name__ == "__main__":
-    main()
+    process_and_filter_artists()
