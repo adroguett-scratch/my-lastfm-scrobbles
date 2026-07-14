@@ -341,6 +341,7 @@ GENRE_DICT = {
     'Prog Metalcore': 'Progressive Metalcore',
     'krautrock': 'krautrock',
     'symphonic rock': 'symphonic rock',
+    'symphonic prog': 'symphonic rock',
     'rock sinfónico': 'symphonic rock',
     'space rock': 'space rock',
     'space-rock': 'space rock',
