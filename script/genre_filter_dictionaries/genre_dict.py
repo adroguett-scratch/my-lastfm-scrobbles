@@ -315,6 +315,7 @@ GENRE_DICT = {
     'avant pop': 'avant pop',
     'avant-pop': 'avant pop',
     'experimental': 'experimental',
+    'experimental rock': 'experimental rock',
     'experimental pop': 'experimental pop',
     'pop psicodélico': 'psychedelic pop',
     'psychedelic pop': 'psychedelic pop',
