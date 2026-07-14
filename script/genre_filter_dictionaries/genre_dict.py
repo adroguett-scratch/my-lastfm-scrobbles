@@ -753,11 +753,10 @@ GENRE_DICT = {
 
 # Generics to discard (not saved)
 GENERIC_TAGS = {
-    'pop', 'rock', 'metal', 'alternative', 'folk',
+    'pop', 'rock', 'metal', 'alternative', 'folk','psychedelic',
     'country', 'blues', 'jazz', 'soul', 'funk', 'rap', 'hip hop',
     'electronic', 'dance', 'classical', 'music', 'instrumental',
     'world', 'latin', 'rnb', 'r&b', 'soundtrack',
-    'indie', 'progressive', 'experimental', 'psychedelic',
-    'symphonic', 'orchestral', 'chamber', 'vocal'
+    'indie', 'progressive', 'symphonic', 'orchestral', 'chamber', 'vocal'
 }
 
