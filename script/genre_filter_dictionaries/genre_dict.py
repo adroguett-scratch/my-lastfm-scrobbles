@@ -757,6 +757,7 @@ GENERIC_TAGS = {
     'country', 'blues', 'jazz', 'soul', 'funk', 'rap', 'hip hop',
     'electronic', 'dance', 'classical', 'music', 'instrumental',
     'world', 'latin', 'rnb', 'r&b', 'soundtrack',
-    'indie', 'progressive', 'symphonic', 'orchestral', 'chamber', 'vocal'
+    'indie', 'progressive', 'symphonic', 'orchestral', 'chamber', 'vocal',
+    'singer-songwriter', 'songwriter', 'singer'
 }
 
