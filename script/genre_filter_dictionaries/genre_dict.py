@@ -30,6 +30,8 @@ GENRE_DICT = {
     'bubblegum': 'bubblegum pop',
     'pop rock': 'pop rock',
     'pop-rock': 'pop rock',
+    'rock pop': 'pop rock',
+    'rock-pop': 'pop rock',
     'pop rock español': 'latin pop rock',
     'pop latino': 'latin pop',
     'latin pop': 'latin pop',
