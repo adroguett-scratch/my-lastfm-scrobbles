@@ -1,10 +1,9 @@
 """
 Song Database - Raw Data Fetcher
 
-This module fetches song data and scrobble history from Last.fm and stores it in a SQLite database.
+This module fetches song data from Last.fm and stores it in a SQLite database.
 It retrieves:
-- Songs (id_artist, title, duration, playcount)
-- Scrobbles (id_song, timestamp)
+- Songs (id_artist, title, duration)
 
 The first run scans ALL scrobbles. Subsequent runs only fetch new ones (incremental update).
 """
@@ -15,7 +14,7 @@ import sys
 import requests
 import time
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import Optional
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -37,7 +36,7 @@ LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/'
 # ============================================
 
 def create_schema(conn):
-    """Creates the Song and Scrobble tables."""
+    """Creates the Song table."""
     cursor = conn.cursor()
 
     # Table: Song
@@ -46,29 +45,15 @@ def create_schema(conn):
             id_song     INTEGER PRIMARY KEY AUTOINCREMENT,
             id_artist   INTEGER NOT NULL,
             title       TEXT    NOT NULL,
-            duration    INTEGER,
-            playcount   INTEGER,
+            duration    INTEGER,  -- Duration in seconds
             last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (id_artist, title)
-        )
-    ''')
-
-    # Table: Scrobble
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Scrobble (
-            id_scrobble INTEGER PRIMARY KEY AUTOINCREMENT,
-            id_song     INTEGER NOT NULL,
-            timestamp   TIMESTAMP NOT NULL,
-            last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (id_song) REFERENCES Song(id_song) ON DELETE CASCADE
         )
     ''')
 
     # Indexes
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_artist ON Song (id_artist)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_title ON Song (title)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_scrobble_song ON Scrobble (id_song)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_scrobble_timestamp ON Scrobble (timestamp)')
 
     # Table to track the last update timestamp
     cursor.execute('''
@@ -80,14 +65,6 @@ def create_schema(conn):
     ''')
 
     conn.commit()
-
-
-def get_last_scrobble_timestamp(conn) -> Optional[str]:
-    """Get the most recent scrobble timestamp from the database."""
-    cursor = conn.cursor()
-    cursor.execute('SELECT MAX(timestamp) FROM Scrobble')
-    row = cursor.fetchone()
-    return row[0] if row and row[0] else None
 
 
 def get_last_update_time(conn) -> Optional[str]:
@@ -116,12 +93,11 @@ def get_artist_id(conn, artist_name: str) -> Optional[int]:
     return row[0] if row else None
 
 
-def get_song_id(conn, id_artist: int, title: str) -> Optional[int]:
-    """Get song ID if it already exists."""
+def song_exists(conn, id_artist: int, title: str) -> bool:
+    """Check if a song already exists in the database."""
     cursor = conn.cursor()
     cursor.execute('SELECT id_song FROM Song WHERE id_artist = ? AND title = ?', (id_artist, title))
-    row = cursor.fetchone()
-    return row[0] if row else None
+    return cursor.fetchone() is not None
 
 
 def save_song(conn, id_artist: int, title: str, duration: Optional[int] = None):
@@ -129,9 +105,8 @@ def save_song(conn, id_artist: int, title: str, duration: Optional[int] = None):
     cursor = conn.cursor()
     
     # Check if song exists
-    existing = get_song_id(conn, id_artist, title)
-    if existing:
-        return existing
+    if song_exists(conn, id_artist, title):
+        return None  # Already exists, skip
     
     # Insert new song
     cursor.execute('''
@@ -143,43 +118,43 @@ def save_song(conn, id_artist: int, title: str, duration: Optional[int] = None):
     return cursor.lastrowid
 
 
-def save_scrobble(conn, id_song: int, timestamp: str):
-    """Save a scrobble to the database."""
-    cursor = conn.cursor()
-    
-    # Check if scrobble already exists (avoid duplicates)
-    cursor.execute('''
-        SELECT id_scrobble FROM Scrobble
-        WHERE id_song = ? AND timestamp = ?
-    ''', (id_song, timestamp))
-    
-    if cursor.fetchone():
-        return  # Scrobble already exists
-    
-    cursor.execute('''
-        INSERT INTO Scrobble (id_song, timestamp, last_update)
-        VALUES (?, ?, CURRENT_TIMESTAMP)
-    ''', (id_song, timestamp))
-    conn.commit()
-
-
-def update_song_playcount(conn, id_song: int):
-    """Update the playcount for a song."""
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE Song
-        SET playcount = (
-            SELECT COUNT(*) FROM Scrobble WHERE id_song = ?
-        ),
-        last_update = CURRENT_TIMESTAMP
-        WHERE id_song = ?
-    ''', (id_song, id_song))
-    conn.commit()
-
-
 # ============================================
 # LAST.FM API FUNCTIONS
 # ============================================
+
+def fetch_song_info(artist_name: str, song_title: str) -> Optional[int]:
+    """
+    Fetch song duration from Last.fm track.getInfo API.
+    Returns duration in seconds, or None if not found.
+    """
+    params = {
+        'method': 'track.getInfo',
+        'artist': artist_name,
+        'track': song_title,
+        'api_key': LASTFM_API_KEY,
+        'format': 'json'
+    }
+    
+    try:
+        resp = requests.get(LASTFM_API_URL, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if 'error' in data:
+            return None
+        
+        track = data.get('track', {})
+        duration = track.get('duration')
+        
+        if duration:
+            return int(duration) // 1000  # Convert ms to seconds
+        
+        return None
+        
+    except Exception as e:
+        print(f"      ⚠️ Could not fetch duration for '{artist_name} - {song_title}': {e}")
+        return None
+
 
 def fetch_scrobbles_page(page: int, limit: int = 200, from_timestamp: Optional[int] = None):
     """Fetch one page of scrobbles from Last.fm."""
@@ -206,26 +181,13 @@ def fetch_scrobbles_page(page: int, limit: int = 200, from_timestamp: Optional[i
 
 
 def process_scrobble(conn, scrobble_data):
-    """Process a single scrobble and save it to the database."""
+    """Process a single scrobble and save the song (if new)."""
     # Skip if it's the currently playing track (no timestamp)
     if '@attr' in scrobble_data and scrobble_data['@attr'].get('nowplaying') == 'true':
         return
     
     artist_name = scrobble_data['artist']['#text']
     song_title = scrobble_data['name']
-    timestamp = scrobble_data['date']['#text']
-    
-    # Parse timestamp to ISO format
-    try:
-        dt = datetime.strptime(timestamp, "%d %b %Y, %H:%M")
-        timestamp_iso = dt.isoformat()
-    except ValueError:
-        try:
-            dt = datetime.strptime(timestamp, "%d %b %Y %H:%M")
-            timestamp_iso = dt.isoformat()
-        except ValueError:
-            print(f"    ⚠️ Could not parse timestamp: {timestamp}")
-            return
     
     # Get artist ID from artist database
     artist_conn = sqlite3.connect(ARTIST_DB_PATH)
@@ -236,11 +198,22 @@ def process_scrobble(conn, scrobble_data):
         print(f"    ⚠️ Artist not found: {artist_name}")
         return
     
-    # Save song
-    id_song = save_song(conn, id_artist, song_title)
+    # Check if song already exists
+    if song_exists(conn, id_artist, song_title):
+        return
     
-    # Save scrobble
-    save_scrobble(conn, id_song, timestamp_iso)
+    # Fetch duration from Last.fm
+    print(f"    🎵 New song: {song_title}")
+    duration = fetch_song_info(artist_name, song_title)
+    if duration:
+        minutes = duration // 60
+        seconds = duration % 60
+        print(f"      ⏱️ Duration: {minutes}:{seconds:02d} ({duration}s)")
+    else:
+        print(f"      ⏱️ Duration: Unknown")
+    
+    # Save song
+    save_song(conn, id_artist, song_title, duration)
 
 
 def fetch_all_scrobbles(conn, limit: int = 200):
@@ -248,23 +221,23 @@ def fetch_all_scrobbles(conn, limit: int = 200):
     Fetch all scrobbles from Last.fm.
     If there are existing scrobbles, only fetch new ones.
     """
-    # Get the last scrobble timestamp from the database
-    last_timestamp = get_last_scrobble_timestamp(conn)
+    # Get the last update time from metadata
+    last_update = get_last_update_time(conn)
     
     # Convert to UNIX timestamp if exists
     from_timestamp = None
-    if last_timestamp:
+    if last_update:
         try:
-            dt = datetime.fromisoformat(last_timestamp)
+            dt = datetime.fromisoformat(last_update)
             from_timestamp = int(dt.timestamp())
-            print(f"📌 Last scrobble timestamp: {last_timestamp} (UNIX: {from_timestamp})")
+            print(f"📌 Last update: {last_update}")
             print("   Fetching only new scrobbles...")
         except ValueError:
-            print(f"   ⚠️ Could not parse timestamp: {last_timestamp}. Fetching all scrobbles...")
+            print(f"   ⚠️ Could not parse timestamp: {last_update}. Fetching all scrobbles...")
     
     page = 1
     total_processed = 0
-    total_new = 0
+    total_new_songs = 0
     
     while True:
         print(f"📄 Fetching page {page}...")
@@ -297,14 +270,6 @@ def fetch_all_scrobbles(conn, limit: int = 200):
         page += 1
         time.sleep(0.3)  # Respect API rate limits
     
-    # Update playcounts for all songs
-    print("\n🔄 Updating playcounts...")
-    cursor = conn.cursor()
-    cursor.execute('SELECT id_song FROM Song')
-    songs = cursor.fetchall()
-    for (id_song,) in songs:
-        update_song_playcount(conn, id_song)
-    
     # Update metadata
     now = datetime.now().isoformat()
     set_last_update_time(conn, now)
@@ -319,16 +284,16 @@ def get_stats(conn):
     cursor.execute('SELECT COUNT(*) FROM Song')
     total_songs = cursor.fetchone()[0]
     
-    cursor.execute('SELECT COUNT(*) FROM Scrobble')
-    total_scrobbles = cursor.fetchone()[0]
+    cursor.execute('SELECT COUNT(*) FROM Song WHERE duration IS NOT NULL')
+    songs_with_duration = cursor.fetchone()[0]
     
-    cursor.execute('SELECT MAX(timestamp) FROM Scrobble')
-    latest = cursor.fetchone()[0]
+    cursor.execute('SELECT SUM(duration) FROM Song')
+    total_duration = cursor.fetchone()[0]
     
     return {
         'total_songs': total_songs,
-        'total_scrobbles': total_scrobbles,
-        'latest_scrobble': latest
+        'songs_with_duration': songs_with_duration,
+        'total_duration_seconds': total_duration
     }
 
 
@@ -365,9 +330,9 @@ def create_database():
     last_update = get_last_update_time(conn)
     if last_update:
         print(f"📂 Database already exists. Last update: {last_update}")
-        print("   Fetching only new scrobbles...")
+        print("   Fetching only new songs...")
     else:
-        print("📂 New database. Fetching ALL scrobbles...")
+        print("📂 New database. Fetching ALL songs...")
     
     print("-" * 60)
     
@@ -382,13 +347,18 @@ def create_database():
     # Get stats
     stats = get_stats(conn)
     
+    # Calculate total duration in hours
+    total_hours = stats['total_duration_seconds'] // 3600 if stats['total_duration_seconds'] else 0
+    remaining_seconds = stats['total_duration_seconds'] % 3600 if stats['total_duration_seconds'] else 0
+    
     print("-" * 60)
     print(f"\n✅ Database updated successfully")
     print(f"📁 Location: {SONG_DB_PATH}")
-    print(f"📋 Tables: Song, Scrobble")
+    print(f"📋 Table: Song")
     print(f"🎵 Total songs: {stats['total_songs']}")
-    print(f"🎧 Total scrobbles: {stats['total_scrobbles']}")
-    print(f"📅 Latest scrobble: {stats['latest_scrobble']}")
+    print(f"⏱️  Songs with duration: {stats['songs_with_duration']}")
+    if stats['total_duration_seconds']:
+        print(f"📊 Total duration: {total_hours}h {remaining_seconds//60}m")
     print("=" * 60)
     
     conn.close()
