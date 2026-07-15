@@ -20,7 +20,7 @@ from nationality_dict import NATIONALITY_TAGS
 
 # Database paths
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', '0_artist_raw.db')
-OUTPUT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), '1_artist_genres.db')
+OUTPUT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', '1_artist_genres.db')
 
 
 # ============================================
