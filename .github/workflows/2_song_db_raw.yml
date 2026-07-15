@@ -1,8 +1,8 @@
-name: 2. Update Songs from Last.fm
+name: 🎵 2. Update Songs from Last.fm
 
 on:
   schedule:
-    - cron: '30 5 * * *'  # 5:30 AM UTC (after artists update)
+    - cron: '30 5 * * *'  # 5:30 AM UTC
   workflow_dispatch:
 
 permissions:
@@ -26,12 +26,6 @@ jobs:
 
       - name: 📁 Create data directory
         run: mkdir -p data
-
-      - name: 📂 Download artist database artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: artist-database-raw
-          path: data/
 
       - name: 🎵 Run song database update
         env:
