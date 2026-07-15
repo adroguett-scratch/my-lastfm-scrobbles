@@ -1,36 +1,274 @@
+"""
+Artist Genre Filter Module
+
+This module provides functionality to filter and normalize genre tags for artists
+using external dictionaries located in the genre_filter_dictionaries directory.
+"""
+
 import sqlite3
 import os
 import sys
-import requests
-import time
+import re
 from datetime import datetime
-from dotenv import load_dotenv
+from typing import List, Optional, Tuple
 
-# Load environment variables
-load_dotenv()
+# Add the genre_filter_dictionaries directory to path
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'genre_filter_dictionaries'))
 
-# Database path
+from genre_dict import GENRE_DICT, GENERIC_TAGS
+from nationality_dict import NATIONALITY_TAGS
+
+# Database paths
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', '0_artist_raw.db')
-
-# --- Credentials ---
-LASTFM_API_KEY = os.environ.get('LASTFM_API_KEY')
-LASTFM_USER = os.environ.get('LASTFM_USER')
-DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
-
-LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/'
-DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions'
-
-# Nationality cache (to avoid repeated API calls)
-nationality_cache = {}
+OUTPUT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), '1_artist_genres.db')
 
 
-def create_schema(conn):
-    """Creates the Artist table with genre and nationality columns."""
+# ============================================
+# DECADE TAGS TO DISCARD
+# ============================================
+
+DECADE_TAGS = {
+    '60s', '70s', '80s', '90s', '00s', '2000s', '2010s', '2020s',
+    '1960s', '1970s', '1980s', '1990s', '2000s',
+    '60', '70', '80', '90', '00',
+    'sixties', 'seventies', 'eighties', 'nineties'
+}
+
+
+# ============================================
+# ARTIST KEYWORDS TO DISCARD
+# ============================================
+
+ARTIST_KEYWORDS = {
+    'band', 'group', 'project', 'ensemble', 'orchestra',
+    'orchestral', 'symphony', 'philharmonic', 'chamber',
+    'music', 'songs', 'album', 'records', 'live', 'concert',
+    'tour', 'festival', 'rock', 'pop', 'metal', 'punk',
+    'alternative', 'indie', 'electronic', 'hip hop'
+}
+
+
+# ============================================
+# FILTER FUNCTIONS
+# ============================================
+
+def is_nationality_tag(tag: str) -> bool:
+    """Check if a tag represents a nationality."""
+    tag_lower = tag.lower()
+    return tag_lower in NATIONALITY_TAGS
+
+
+def is_decade_tag(tag: str) -> bool:
+    """Check if a tag represents a decade."""
+    tag_lower = tag.lower()
+    return tag_lower in DECADE_TAGS
+
+
+def is_generic_tag(tag: str) -> bool:
+    """Check if a tag is too generic (e.g., 'rock', 'pop', 'metal')."""
+    tag_lower = tag.lower()
+    return tag_lower in GENERIC_TAGS
+
+
+def is_artist_keyword(tag: str) -> bool:
+    """Check if a tag contains artist keywords (e.g., 'band', 'group')."""
+    tag_lower = tag.lower()
+    return any(keyword in tag_lower for keyword in ARTIST_KEYWORDS)
+
+
+def is_artist_name_tag(tag: str, artist_name: str) -> bool:
+    """
+    Check if a tag is the artist's name (e.g., 'pink floyd' as a tag for Pink Floyd).
+    
+    Args:
+        tag: The tag to check
+        artist_name: The artist's name to compare against
+        
+    Returns:
+        True if the tag matches the artist name, False otherwise
+    """
+    if not tag or not artist_name:
+        return False
+    
+    tag_clean = tag.lower().strip()
+    artist_clean = artist_name.lower().strip()
+    
+    # Direct match
+    if tag_clean == artist_clean:
+        return True
+    
+    # Check if tag is a substring of artist name (e.g., 'pink' for 'Pink Floyd')
+    if len(tag_clean) >= 3 and tag_clean in artist_clean:
+        return True
+    
+    # Check if artist name is a substring of tag (e.g., 'floyd' for 'Pink Floyd')
+    if len(artist_clean) >= 3 and artist_clean in tag_clean:
+        return True
+    
+    # Check for common variations
+    common_words = {'the', 'and', 'of', 'for', 'with', 'on', 'at', 'from', 'by'}
+    
+    tag_words = set(tag_clean.split())
+    artist_words = set(artist_clean.split())
+    
+    # Remove common words
+    tag_words = tag_words - common_words
+    artist_words = artist_words - common_words
+    
+    # Check if any significant word matches
+    if tag_words and artist_words:
+        for tw in tag_words:
+            for aw in artist_words:
+                if len(tw) >= 3 and len(aw) >= 3 and (tw in aw or aw in tw):
+                    return True
+    
+    return False
+
+
+def normalize_genre(tag: str) -> str:
+    """
+    Normalize a genre tag using the GENRE_DICT.
+    Returns the normalized genre in lowercase.
+    """
+    tag_lower = tag.lower()
+    if tag_lower in GENRE_DICT:
+        return GENRE_DICT[tag_lower].lower()
+    return tag.lower()
+
+
+def should_keep_tag(tag: str, artist_name: str = None) -> bool:
+    """
+    Determine if a tag should be kept after filtering.
+    
+    Args:
+        tag: The tag to evaluate
+        artist_name: The artist's name (to discard artist-name tags)
+        
+    Returns:
+        True if the tag should be kept, False otherwise
+    """
+    if not tag or not tag.strip():
+        return False
+    
+    tag_lower = tag.lower()
+    
+    # Discard nationalities
+    if is_nationality_tag(tag_lower):
+        return False
+    
+    # Discard decades
+    if is_decade_tag(tag_lower):
+        return False
+    
+    # Discard generic tags
+    if is_generic_tag(tag_lower):
+        return False
+    
+    # Discard artist keywords
+    if is_artist_keyword(tag_lower):
+        return False
+    
+    # Discard tags that are the artist's name
+    if artist_name and is_artist_name_tag(tag, artist_name):
+        return False
+    
+    return True
+
+
+def filter_and_normalize_genres(raw_tags: List[str], artist_name: str = None) -> List[str]:
+    """
+    Filter and normalize a list of genre tags.
+    
+    Steps:
+    1. Normalize each tag using GENRE_DICT (returns lowercase)
+    2. Filter out unwanted tags (nationality, decade, generic, artist keywords, artist name)
+    3. Remove duplicates (case-insensitive)
+    4. Return unique, clean genres (all lowercase)
+    
+    Args:
+        raw_tags: List of raw genre tags from Last.fm
+        artist_name: The artist's name (to discard artist-name tags)
+        
+    Returns:
+        List of filtered and normalized genres (all lowercase)
+    """
+    if not raw_tags:
+        return []
+    
+    # Step 1: Normalize all tags (returns lowercase)
+    normalized = []
+    for tag in raw_tags:
+        if tag and isinstance(tag, str):
+            normalized_tag = normalize_genre(tag)
+            if normalized_tag:
+                normalized.append(normalized_tag)
+    
+    # Step 2: Filter unwanted tags
+    filtered = []
+    for tag in normalized:
+        if should_keep_tag(tag, artist_name):
+            filtered.append(tag)
+    
+    # Step 3: Remove duplicates (case-insensitive)
+    seen = set()
+    unique_genres = []
+    for tag in filtered:
+        tag_lower = tag.lower()
+        if tag_lower not in seen:
+            seen.add(tag_lower)
+            unique_genres.append(tag_lower)
+    
+    return unique_genres
+
+
+def get_top_n_genres(raw_tags: List[str], artist_name: str = None, n: int = 5) -> List[str]:
+    """Get the top N genres from a list of raw tags (all lowercase)."""
+    filtered = filter_and_normalize_genres(raw_tags, artist_name)
+    return filtered[:n]
+
+
+# ============================================
+# DATABASE FUNCTIONS
+# ============================================
+
+def get_raw_artists(conn):
+    """Get all artists with their raw genres from the raw database."""
     cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id_artist, name, nationality,
+               genre_1, genre_2, genre_3, genre_4, genre_5,
+               genre_6, genre_7, genre_8, genre_9, genre_10,
+               genre_11, genre_12, genre_13, genre_14, genre_15
+        FROM Artist
+    ''')
+    
+    artists = []
+    for row in cursor.fetchall():
+        artist_id = row[0]
+        name = row[1]
+        nationality = row[2]
+        # Collect non-None genres
+        raw_genres = []
+        for i in range(3, 18):  # genre_1 to genre_15
+            if row[i] is not None:
+                raw_genres.append(row[i])
+        artists.append({
+            'id': artist_id,
+            'name': name,
+            'nationality': nationality,
+            'raw_genres': raw_genres
+        })
+    
+    return artists
 
+
+def create_filtered_schema(conn):
+    """Create the filtered Artist table."""
+    cursor = conn.cursor()
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Artist (
-            id_artist   INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_artist   INTEGER PRIMARY KEY,
             name        TEXT    NOT NULL UNIQUE,
             nationality TEXT,
             genre_1     TEXT,
@@ -38,226 +276,117 @@ def create_schema(conn):
             genre_3     TEXT,
             genre_4     TEXT,
             genre_5     TEXT,
-            genre_6     TEXT,
-            genre_7     TEXT,
-            genre_8     TEXT,
-            genre_9     TEXT,
-            genre_10    TEXT,
-            genre_11    TEXT,
-            genre_12    TEXT,
-            genre_13    TEXT,
-            genre_14    TEXT,
-            genre_15    TEXT,
             last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_artist_name ON Artist (name)')
-
-    # Migration: add nationality column if it doesn't exist
-    cursor.execute("PRAGMA table_info(Artist)")
-    columns = [row[1] for row in cursor.fetchall()]
-
-    if 'nationality' not in columns:
-        cursor.execute('ALTER TABLE Artist ADD COLUMN nationality TEXT')
-
-    # Rename 'genre' -> 'genre_1' if coming from a very old version
-    if 'genre' in columns and 'genre_1' not in columns:
-        cursor.execute('ALTER TABLE Artist RENAME COLUMN genre TO genre_1')
-        cursor.execute("PRAGMA table_info(Artist)")
-        columns = [row[1] for row in cursor.fetchall()]
-
-    for n in range(1, 16):
-        col = f'genre_{n}'
-        if col not in columns:
-            cursor.execute(f'ALTER TABLE Artist ADD COLUMN {col} TEXT')
-
+    
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_artist_name_filtered ON Artist (name)')
     conn.commit()
 
 
-def artist_exists(conn, name):
-    """Check if an artist already exists in the database."""
-    cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM Artist WHERE name = ?', (name,))
-    count = cursor.fetchone()[0]
-    return count > 0
-
-
-def get_top_artists(limit=50):
-    """Fetches the top artists from Last.fm for the user."""
-    params = {
-        'method': 'user.gettopartists',
-        'user': LASTFM_USER,
-        'api_key': LASTFM_API_KEY,
-        'format': 'json',
-        'period': 'overall',
-        'limit': limit
-    }
-
-    resp = requests.get(LASTFM_API_URL, params=params, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-
-    if 'error' in data:
-        raise RuntimeError(f"Last.fm API error: {data.get('message', data)}")
-
-    artists = data.get('topartists', {}).get('artist', [])
-    return [a['name'] for a in artists]
-
-
-def get_genres_from_lastfm(artist_name):
-    """Fetches up to 15 raw tags (genres) from Last.fm for an artist."""
-    params = {
-        'method': 'artist.gettoptags',
-        'artist': artist_name,
-        'api_key': LASTFM_API_KEY,
-        'format': 'json'
-    }
-
-    try:
-        resp = requests.get(LASTFM_API_URL, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        tags = data.get('toptags', {}).get('tag', [])
-        names = [t['name'] for t in tags[:15]]
-    except Exception as e:
-        print(f"  ⚠️ Could not fetch genres for '{artist_name}': {e}")
-        names = []
-
-    while len(names) < 15:
-        names.append(None)
-
-    return names
-
-
-def get_nationality_from_deepseek(artist_name):
-    """Uses DeepSeek API to get the nationality of an artist."""
-    if not DEEPSEEK_API_KEY:
-        print("    ⚠️ DeepSeek API Key not configured. Nationality: Unknown")
-        return 'Unknown'
+def save_filtered_artist(conn, artist_id, name, nationality, genres):
+    """Save a filtered artist to the database (genres already in lowercase)."""
+    # Pad genres to exactly 5
+    while len(genres) < 5:
+        genres.append(None)
     
-    # Check cache
-    if artist_name in nationality_cache:
-        return nationality_cache[artist_name]
-    
-    try:
-        prompt = f"What country is the musical artist '{artist_name}' from? Respond ONLY with the country name in English, without any additional explanation. If you are not sure, respond 'Unknown'."
-        
-        headers = {
-            'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
-            'Content-Type': 'application/json'
-        }
-        
-        data = {
-            'model': 'deepseek-chat',
-            'messages': [
-                {'role': 'system', 'content': 'You are a music assistant that answers questions about artists. Respond concisely and accurately.'},
-                {'role': 'user', 'content': prompt}
-            ],
-            'temperature': 0.1,
-            'max_tokens': 50
-        }
-        
-        resp = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=10)
-        resp.raise_for_status()
-        result = resp.json()
-        
-        nationality = result['choices'][0]['message']['content'].strip()
-        
-        # Clean up response
-        if len(nationality) > 50 or 'not sure' in nationality.lower():
-            nationality = 'Unknown'
-        
-        # Save to cache
-        nationality_cache[artist_name] = nationality
-        return nationality
-        
-    except Exception as e:
-        print(f"    ⚠️ DeepSeek API error for '{artist_name}': {e}")
-        return 'Unknown'
-
-
-def save_artist(conn, name, genres, nationality):
-    """Inserts or updates an artist in the database."""
-    genre_columns = [f'genre_{n}' for n in range(1, 16)]
-    placeholders = ', '.join(['?'] * len(genre_columns))
-    set_clause = ', '.join([f'{c} = excluded.{c}' for c in genre_columns])
-
     cursor = conn.cursor()
-    cursor.execute(f'''
-        INSERT INTO Artist (name, nationality, {', '.join(genre_columns)}, last_update)
-        VALUES (?, ?, {placeholders}, CURRENT_TIMESTAMP)
-        ON CONFLICT(name) DO UPDATE SET
-            nationality = excluded.nationality,
-            {set_clause},
-            last_update = CURRENT_TIMESTAMP
-    ''', (name, nationality, *genres))
+    cursor.execute('''
+        INSERT OR REPLACE INTO Artist (id_artist, name, nationality, genre_1, genre_2, genre_3, genre_4, genre_5, last_update)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ''', (artist_id, name, nationality, genres[0], genres[1], genres[2], genres[3], genres[4]))
     conn.commit()
 
 
-def create_database():
-    """Creates the database and populates it with real data from Last.fm."""
-    
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-
-    create_schema(conn)
-
-    if not LASTFM_API_KEY or not LASTFM_USER:
-        print("⚠️ LASTFM_API_KEY / LASTFM_USER not found in environment variables.")
-        print("   The table was created, but no artists were imported from Last.fm.")
-        conn.close()
-        return
-
-    print(f"🔎 Fetching artists from '{LASTFM_USER}' on Last.fm...")
-    try:
-        artists = get_top_artists(limit=50)
-    except Exception as e:
-        print(f"❌ Error fetching from Last.fm: {e}")
-        conn.close()
-        sys.exit(1)
-
-    print(f"🎧 {len(artists)} artists found. Processing...")
-
-    skipped_count = 0
-    new_count = 0
-
-    for i, name in enumerate(artists, start=1):
-        # Skip if artist already exists in the database
-        if artist_exists(conn, name):
-            print(f"  [{i}/{len(artists)}] {name} ⏭️  Already exists. Skipping.")
-            skipped_count += 1
-            continue
-
-        print(f"  [{i}/{len(artists)}] {name}")
-        
-        # Get genres from Last.fm
-        genres = get_genres_from_lastfm(name)
-        
-        # Get nationality with DeepSeek
-        print(f"    🏳️ Fetching nationality...")
-        nationality = get_nationality_from_deepseek(name)
-        print(f"    📍 Nationality: {nationality}")
-        
-        save_artist(conn, name, genres, nationality)
-        new_count += 1
-        
-        # Small delay to avoid API rate limits
-        time.sleep(0.3)
-
+def get_filtered_stats(conn):
+    """Get statistics from the filtered database."""
     cursor = conn.cursor()
     cursor.execute('SELECT COUNT(*) FROM Artist')
     total = cursor.fetchone()[0]
+    return total
 
-    print(f"\n✅ Database updated successfully")
-    print(f"📁 Location: {DB_PATH}")
-    print(f"📋 Table 'Artist' with genres and nationality")
-    print(f"🎵 Total artists in DB: {total}")
-    print(f"   New artists added: {new_count}")
-    print(f"   Skipped (already existed): {skipped_count}")
 
-    conn.close()
+# ============================================
+# MAIN PROCESSING FUNCTION
+# ============================================
+
+def process_and_filter_artists():
+    """Process raw artists and generate filtered database."""
+    
+    print("=" * 60)
+    print("ARTIST GENRE FILTER")
+    print("=" * 60)
+    
+    # Check if raw database exists
+    if not os.path.exists(DB_PATH):
+        print(f"❌ Raw database not found: {DB_PATH}")
+        print("   Please run 0_artist_db_raw.py first.")
+        return
+    
+    # Connect to raw database
+    print(f"📂 Reading from: {DB_PATH}")
+    raw_conn = sqlite3.connect(DB_PATH)
+    raw_conn.row_factory = sqlite3.Row
+    
+    # Connect to output database (in current directory)
+    print(f"📂 Writing to: {OUTPUT_DB_PATH}")
+    out_conn = sqlite3.connect(OUTPUT_DB_PATH)
+    
+    # Create filtered schema
+    create_filtered_schema(out_conn)
+    
+    # Get all raw artists
+    artists = get_raw_artists(raw_conn)
+    print(f"🎵 Found {len(artists)} artists to process")
+    print("-" * 60)
+    
+    processed = 0
+    skipped = 0
+    
+    for artist in artists:
+        name = artist['name']
+        raw_genres = artist['raw_genres']
+        nationality = artist['nationality'] or 'Unknown'
+        
+        print(f"\n🎵 Processing: {name}")
+        print(f"   Raw genres: {raw_genres}")
+        
+        # Filter and normalize genres (all lowercase)
+        clean_genres = filter_and_normalize_genres(raw_genres, artist_name=name)
+        
+        # Get top 5 genres
+        top_genres = clean_genres[:5]
+        
+        # Skip if no genres remain after filtering
+        if not top_genres:
+            print(f"   ⚠️ No genres after filtering")
+            skipped += 1
+            continue
+        
+        # Save filtered artist
+        save_filtered_artist(out_conn, artist['id'], name, nationality, top_genres)
+        processed += 1
+        
+        print(f"   ✅ Filtered genres: {top_genres}")
+    
+    # Commit and close
+    out_conn.commit()
+    
+    # Get statistics
+    total = get_filtered_stats(out_conn)
+    
+    print("-" * 60)
+    print(f"\n✅ Filtered database created successfully")
+    print(f"📁 Location: {OUTPUT_DB_PATH}")
+    print(f"📋 Table 'Artist' with filtered genres (top 5, all lowercase)")
+    print(f"🎵 Total artists in filtered DB: {total}")
+    print(f"   Processed: {processed}")
+    print(f"   Skipped (no genres): {skipped}")
+    print("=" * 60)
+    
+    raw_conn.close()
+    out_conn.close()
 
 
 if __name__ == "__main__":
-    create_database()
+    process_and_filter_artists()
