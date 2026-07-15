@@ -7,7 +7,7 @@ on:
   workflow_dispatch:  # Allow manual trigger
 
 permissions:
-  contents: read  # Only read access needed (no push)
+  contents: write  # Needed to commit/push the updated database
 
 jobs:
   update-artists:
@@ -36,6 +36,14 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           python script/0_artist_db_raw.py
+
+      - name: Commit and push database
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/0_artist_raw.db
+          git diff --staged --quiet || git commit -m "Actualizar 0_artist_raw.db con artistas de Last.fm [skip ci]"
+          git push
 
       - name: Upload database as artifact
         uses: actions/upload-artifact@v4
