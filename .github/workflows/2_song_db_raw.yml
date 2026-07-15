@@ -1,0 +1,47 @@
+name: 2. Update Songs from Last.fm
+
+on:
+  schedule:
+    - cron: '30 5 * * *'  # 5:30 AM UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update-songs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create data directory
+        run: mkdir -p data
+
+      - name: Download artist database artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: artist-database-raw
+          path: data/
+
+      - name: Run song database update
+        env:
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_USER: ${{ secrets.LASTFM_USER }}
+        run: python script/2_song_db_raw.py
+
+      - name: Upload song database as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: songs-database-raw
+          path: data/2_songs_raw.db
+          retention-days: 7
