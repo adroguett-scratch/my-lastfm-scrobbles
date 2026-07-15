@@ -1,8 +1,8 @@
 name: 🎵 2. Update Songs from Last.fm
 
-on:
-  schedule:
-    - cron: '30 5 * * *'  # 5:30 AM UTC
+#on:
+   #schedule:
+ ##  - cron: '30 5 * * *'  # 5:30 AM UTC
   workflow_dispatch:
 
 permissions:
