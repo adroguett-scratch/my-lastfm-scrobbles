@@ -8,6 +8,7 @@ using external dictionaries located in the genre_filter_dictionaries directory.
 import sqlite3
 import os
 import sys
+import re
 from datetime import datetime
 from typing import List, Optional, Tuple
 
@@ -40,7 +41,10 @@ DECADE_TAGS = {
 
 ARTIST_KEYWORDS = {
     'band', 'group', 'project', 'ensemble', 'orchestra',
-    'orchestral', 'symphony', 'philharmonic', 'chamber'
+    'orchestral', 'symphony', 'philharmonic', 'chamber',
+    'music', 'songs', 'album', 'records', 'live', 'concert',
+    'tour', 'festival', 'rock', 'pop', 'metal', 'punk',
+    'alternative', 'indie', 'electronic', 'hip hop'
 }
 
 
@@ -72,6 +76,57 @@ def is_artist_keyword(tag: str) -> bool:
     return any(keyword in tag_lower for keyword in ARTIST_KEYWORDS)
 
 
+def is_artist_name_tag(tag: str, artist_name: str) -> bool:
+    """
+    Check if a tag is the artist's name (e.g., 'pink floyd' as a tag for Pink Floyd).
+    
+    Args:
+        tag: The tag to check
+        artist_name: The artist's name to compare against
+        
+    Returns:
+        True if the tag matches the artist name, False otherwise
+    """
+    if not tag or not artist_name:
+        return False
+    
+    tag_clean = tag.lower().strip()
+    artist_clean = artist_name.lower().strip()
+    
+    # Direct match
+    if tag_clean == artist_clean:
+        return True
+    
+    # Check if tag is a substring of artist name (e.g., 'pink' for 'Pink Floyd')
+    # but only if it's a significant part (at least 3 characters)
+    if len(tag_clean) >= 3 and tag_clean in artist_clean:
+        return True
+    
+    # Check if artist name is a substring of tag (e.g., 'floyd' for 'Pink Floyd')
+    if len(artist_clean) >= 3 and artist_clean in tag_clean:
+        return True
+    
+    # Check for common variations
+    # Remove common words like 'the', 'and', 'of' for comparison
+    common_words = {'the', 'and', 'of', 'for', 'with', 'on', 'at', 'from', 'by'}
+    
+    tag_words = set(tag_clean.split())
+    artist_words = set(artist_clean.split())
+    
+    # Remove common words
+    tag_words = tag_words - common_words
+    artist_words = artist_words - common_words
+    
+    # Check if any significant word matches
+    if tag_words and artist_words:
+        for tw in tag_words:
+            for aw in artist_words:
+                if len(tw) >= 3 and len(aw) >= 3 and (tw in aw or aw in tw):
+                    return True
+    
+    return False
+
+
 def normalize_genre(tag: str) -> str:
     """Normalize a genre tag using the GENRE_DICT."""
     tag_lower = tag.lower()
@@ -80,8 +135,17 @@ def normalize_genre(tag: str) -> str:
     return tag
 
 
-def should_keep_tag(tag: str) -> bool:
-    """Determine if a tag should be kept after filtering."""
+def should_keep_tag(tag: str, artist_name: str = None) -> bool:
+    """
+    Determine if a tag should be kept after filtering.
+    
+    Args:
+        tag: The tag to evaluate
+        artist_name: The artist's name (to discard artist-name tags)
+        
+    Returns:
+        True if the tag should be kept, False otherwise
+    """
     if not tag or not tag.strip():
         return False
     
@@ -103,18 +167,29 @@ def should_keep_tag(tag: str) -> bool:
     if is_artist_keyword(tag_lower):
         return False
     
+    # Discard tags that are the artist's name
+    if artist_name and is_artist_name_tag(tag, artist_name):
+        return False
+    
     return True
 
 
-def filter_and_normalize_genres(raw_tags: List[str]) -> List[str]:
+def filter_and_normalize_genres(raw_tags: List[str], artist_name: str = None) -> List[str]:
     """
     Filter and normalize a list of genre tags.
     
     Steps:
     1. Normalize each tag using GENRE_DICT
-    2. Filter out unwanted tags (nationality, decade, generic, artist keywords)
+    2. Filter out unwanted tags (nationality, decade, generic, artist keywords, artist name)
     3. Remove duplicates (case-insensitive)
     4. Return unique, clean genres
+    
+    Args:
+        raw_tags: List of raw genre tags from Last.fm
+        artist_name: The artist's name (to discard artist-name tags)
+        
+    Returns:
+        List of filtered and normalized genres
     """
     if not raw_tags:
         return []
@@ -128,7 +203,10 @@ def filter_and_normalize_genres(raw_tags: List[str]) -> List[str]:
                 normalized.append(normalized_tag)
     
     # Step 2: Filter unwanted tags
-    filtered = [tag for tag in normalized if should_keep_tag(tag)]
+    filtered = []
+    for tag in normalized:
+        if should_keep_tag(tag, artist_name):
+            filtered.append(tag)
     
     # Step 3: Remove duplicates (case-insensitive)
     seen = set()
@@ -142,9 +220,9 @@ def filter_and_normalize_genres(raw_tags: List[str]) -> List[str]:
     return unique_genres
 
 
-def get_top_n_genres(raw_tags: List[str], n: int = 5) -> List[str]:
+def get_top_n_genres(raw_tags: List[str], artist_name: str = None, n: int = 5) -> List[str]:
     """Get the top N genres from a list of raw tags."""
-    filtered = filter_and_normalize_genres(raw_tags)
+    filtered = filter_and_normalize_genres(raw_tags, artist_name)
     return filtered[:n]
 
 
@@ -269,15 +347,18 @@ def process_and_filter_artists():
         raw_genres = artist['raw_genres']
         nationality = artist['nationality'] or 'Unknown'
         
-        # Filter and normalize genres
-        clean_genres = filter_and_normalize_genres(raw_genres)
+        print(f"\n🎵 Processing: {name}")
+        print(f"   Raw genres: {raw_genres}")
+        
+        # Filter and normalize genres (pass artist name to discard artist-name tags)
+        clean_genres = filter_and_normalize_genres(raw_genres, artist_name=name)
         
         # Get top 5 genres
         top_genres = clean_genres[:5]
         
         # Skip if no genres remain after filtering
         if not top_genres:
-            print(f"⚠️  {name}: No genres after filtering (raw: {raw_genres})")
+            print(f"   ⚠️ No genres after filtering")
             skipped += 1
             continue
         
@@ -285,7 +366,7 @@ def process_and_filter_artists():
         save_filtered_artist(out_conn, artist['id'], name, nationality, top_genres)
         processed += 1
         
-        print(f"✅ {name}: {top_genres}")
+        print(f"   ✅ Filtered genres: {top_genres}")
     
     # Commit and close
     out_conn.commit()
