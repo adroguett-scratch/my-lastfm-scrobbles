@@ -76,6 +76,7 @@ GENRE_DICT = {
     'glam-rock': 'glam rock',
     'psychedelic rock': 'psychedelic rock',
     'rock psicodélico': 'psychedelic rock',
+    'psychedelic': 'psychedelic rock',
     'southern rock': 'southern rock',
     'roots rock': 'roots rock',
     'roots-rock': 'roots rock',
@@ -139,6 +140,7 @@ GENRE_DICT = {
     ###############################################################################
     'heavy metal': 'heavy metal',
     'heavy-metal': 'heavy metal',
+    'metal': 'heavy metal',
     'traditional heavy metal': 'heavy metal',
     'trad heavy metal': 'heavy metal',
     'nwobhm': 'nwobhm',
@@ -753,11 +755,11 @@ GENRE_DICT = {
 
 # Generics to discard (not saved)
 GENERIC_TAGS = {
-    'pop', 'rock', 'metal', 'alternative', 'folk','psychedelic',
+    'pop', 'rock', 'folk',
     'country', 'blues', 'jazz', 'soul', 'funk', 'rap', 'hip hop',
-    'electronic', 'dance', 'classical', 'music', 'instrumental',
+    'electronic', 'dance', 'classical', 'music',
     'world', 'latin', 'rnb', 'r&b', 'soundtrack',
-    'indie', 'progressive', 'symphonic', 'orchestral', 'chamber', 'vocal',
+    'indie', 'symphonic', 'orchestral', 'chamber', 'vocal',
     'singer-songwriter', 'songwriter', 'singer'
 }
 
