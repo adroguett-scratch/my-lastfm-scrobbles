@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   update-songs:
@@ -27,17 +27,19 @@ jobs:
       - name: Create data directory
         run: mkdir -p data
 
-      - name: Download artist database artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: artist-database-raw
-          path: data/
-
       - name: Run song database update
         env:
           LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
           LASTFM_USER: ${{ secrets.LASTFM_USER }}
         run: python script/2_song_db_raw.py
+
+      - name: Commit and push song database
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/2_songs_raw.db
+          git diff --staged --quiet || git commit -m "Actualizar 2_songs_raw.db con canciones y scrobbles [skip ci]"
+          git push
 
       - name: Upload song database as artifact
         uses: actions/upload-artifact@v4
