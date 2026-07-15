@@ -98,7 +98,6 @@ def is_artist_name_tag(tag: str, artist_name: str) -> bool:
         return True
     
     # Check if tag is a substring of artist name (e.g., 'pink' for 'Pink Floyd')
-    # but only if it's a significant part (at least 3 characters)
     if len(tag_clean) >= 3 and tag_clean in artist_clean:
         return True
     
@@ -107,7 +106,6 @@ def is_artist_name_tag(tag: str, artist_name: str) -> bool:
         return True
     
     # Check for common variations
-    # Remove common words like 'the', 'and', 'of' for comparison
     common_words = {'the', 'and', 'of', 'for', 'with', 'on', 'at', 'from', 'by'}
     
     tag_words = set(tag_clean.split())
@@ -128,11 +126,14 @@ def is_artist_name_tag(tag: str, artist_name: str) -> bool:
 
 
 def normalize_genre(tag: str) -> str:
-    """Normalize a genre tag using the GENRE_DICT."""
+    """
+    Normalize a genre tag using the GENRE_DICT.
+    Returns the normalized genre in lowercase.
+    """
     tag_lower = tag.lower()
     if tag_lower in GENRE_DICT:
-        return GENRE_DICT[tag_lower]
-    return tag
+        return GENRE_DICT[tag_lower].lower()
+    return tag.lower()
 
 
 def should_keep_tag(tag: str, artist_name: str = None) -> bool:
@@ -179,22 +180,22 @@ def filter_and_normalize_genres(raw_tags: List[str], artist_name: str = None) ->
     Filter and normalize a list of genre tags.
     
     Steps:
-    1. Normalize each tag using GENRE_DICT
+    1. Normalize each tag using GENRE_DICT (returns lowercase)
     2. Filter out unwanted tags (nationality, decade, generic, artist keywords, artist name)
     3. Remove duplicates (case-insensitive)
-    4. Return unique, clean genres
+    4. Return unique, clean genres (all lowercase)
     
     Args:
         raw_tags: List of raw genre tags from Last.fm
         artist_name: The artist's name (to discard artist-name tags)
         
     Returns:
-        List of filtered and normalized genres
+        List of filtered and normalized genres (all lowercase)
     """
     if not raw_tags:
         return []
     
-    # Step 1: Normalize all tags
+    # Step 1: Normalize all tags (returns lowercase)
     normalized = []
     for tag in raw_tags:
         if tag and isinstance(tag, str):
@@ -215,13 +216,13 @@ def filter_and_normalize_genres(raw_tags: List[str], artist_name: str = None) ->
         tag_lower = tag.lower()
         if tag_lower not in seen:
             seen.add(tag_lower)
-            unique_genres.append(tag)
+            unique_genres.append(tag_lower)
     
     return unique_genres
 
 
 def get_top_n_genres(raw_tags: List[str], artist_name: str = None, n: int = 5) -> List[str]:
-    """Get the top N genres from a list of raw tags."""
+    """Get the top N genres from a list of raw tags (all lowercase)."""
     filtered = filter_and_normalize_genres(raw_tags, artist_name)
     return filtered[:n]
 
@@ -284,7 +285,7 @@ def create_filtered_schema(conn):
 
 
 def save_filtered_artist(conn, artist_id, name, nationality, genres):
-    """Save a filtered artist to the database."""
+    """Save a filtered artist to the database (genres already in lowercase)."""
     # Pad genres to exactly 5
     while len(genres) < 5:
         genres.append(None)
@@ -350,7 +351,7 @@ def process_and_filter_artists():
         print(f"\n🎵 Processing: {name}")
         print(f"   Raw genres: {raw_genres}")
         
-        # Filter and normalize genres (pass artist name to discard artist-name tags)
+        # Filter and normalize genres (all lowercase)
         clean_genres = filter_and_normalize_genres(raw_genres, artist_name=name)
         
         # Get top 5 genres
@@ -377,7 +378,7 @@ def process_and_filter_artists():
     print("-" * 60)
     print(f"\n✅ Filtered database created successfully")
     print(f"📁 Location: {OUTPUT_DB_PATH}")
-    print(f"📋 Table 'Artist' with filtered genres (top 5)")
+    print(f"📋 Table 'Artist' with filtered genres (top 5, all lowercase)")
     print(f"🎵 Total artists in filtered DB: {total}")
     print(f"   Processed: {processed}")
     print(f"   Skipped (no genres): {skipped}")
