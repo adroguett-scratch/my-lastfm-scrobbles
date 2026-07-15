@@ -43,8 +43,7 @@ ARTIST_KEYWORDS = {
     'band', 'group', 'project', 'ensemble', 'orchestra',
     'orchestral', 'symphony', 'philharmonic', 'chamber',
     'music', 'songs', 'album', 'records', 'live', 'concert',
-    'tour', 'festival', 'rock', 'pop', 'metal', 'punk',
-    'alternative', 'indie', 'electronic', 'hip hop'
+    'tour', 'festival'
 }
 
 
