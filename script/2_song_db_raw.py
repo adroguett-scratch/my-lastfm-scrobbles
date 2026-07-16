@@ -8,7 +8,7 @@ It retrieves:
 Duration is fetched from:
 1. Last.fm API (primary)
 2. Spotify API (fallback 1)
-3. Gemma 4 API (fallback 2)
+3. Gemma 4 API (fallback 2) - with validation
 4. DeepSeek API (fallback 3, last resort)
 
 OPTIMIZATION: Songs are only fetched ONCE. If a song already exists in the database,
@@ -132,7 +132,10 @@ def fetch_duration_from_spotify(artist_name: str, song_title: str) -> Optional[i
 # ============================================
 
 def fetch_duration_from_gemma4(artist_name: str, song_title: str) -> Optional[int]:
-    """Fetch song duration from Gemma 4 API."""
+    """
+    Fetch song duration from Gemma 4 API.
+    Uses gemma-4-31b-it for better accuracy on complex song titles.
+    """
     if not GEMMA4_API_KEY:
         return None
 
@@ -141,19 +144,33 @@ def fetch_duration_from_gemma4(artist_name: str, song_title: str) -> Optional[in
 
         genai.configure(api_key=GEMMA4_API_KEY)
 
-        model = genai.GenerativeModel('gemma-4-26b-a4b-it')
+        # Use the more powerful model for better accuracy
+        model = genai.GenerativeModel('gemma-4-31b-it')
 
-        prompt = f"""You are a music assistant that answers questions about songs. Respond ONLY with a number (duration in seconds).
+        # Clean up the song title for better search
+        # Remove extra spaces, clean up separators
+        clean_title = song_title.strip()
+        # Remove excessive separators like ":" or "/" for cleaner prompt
+        clean_title = re.sub(r'\s*[:/]\s*', ' / ', clean_title)
+
+        prompt = f"""You are a music expert assistant. Your task is to find the exact duration of a specific song.
 
 Artist: {artist_name}
-Song: {song_title}
+Song: {clean_title}
 
-What is the duration of this song in seconds? Respond ONLY with the number."""
+IMPORTANT: 
+- Respond ONLY with the duration in seconds as a number.
+- For example: 407, 765, 1020
+- Do NOT respond with minutes:seconds format.
+- Do NOT add any other text or explanation.
+- If you don't know the exact duration, respond with '0'.
+
+What is the duration in seconds of "{clean_title}" by {artist_name}?"""
 
         response = model.generate_content(
             prompt,
             generation_config={
-                'temperature': 1.0,
+                'temperature': 0.3,  # Lower temperature for more accurate responses
                 'top_p': 0.95,
                 'top_k': 64,
             }
@@ -165,6 +182,11 @@ What is the duration of this song in seconds? Respond ONLY with the number."""
         match = re.search(r'\d+', duration_str)
         if match:
             duration = int(match.group())
+            # Gemma sometimes returns 1-6 seconds incorrectly for long songs
+            # If duration < 60 seconds, it's likely wrong for most songs
+            if duration > 0 and duration < 60:
+                print(f"      ⚠️ Gemma returned suspicious duration: {duration}s (< 1 min). Will verify with DeepSeek.")
+                return None  # Force DeepSeek verification
             if duration > 0 and duration < 6000:  # Sanity check: less than 100 minutes
                 return duration
 
@@ -183,17 +205,23 @@ What is the duration of this song in seconds? Respond ONLY with the number."""
 # ============================================
 
 def fetch_duration_from_deepseek(artist_name: str, song_title: str) -> Optional[int]:
-    """Fetch song duration from DeepSeek API."""
+    """
+    Fetch song duration from DeepSeek API.
+    Used as final verification when Gemma returns suspicious values.
+    """
     if not DEEPSEEK_API_KEY:
         return None
 
     try:
-        prompt = f"""You are a music assistant that answers questions about songs. Respond ONLY with a number (duration in seconds).
+        # Clean up the song title
+        clean_title = song_title.strip()
+        clean_title = re.sub(r'\s*[:/]\s*', ' / ', clean_title)
 
-Artist: {artist_name}
-Song: {song_title}
+        prompt = f"""You are a music expert. What is the exact duration of the song "{clean_title}" by {artist_name}?
 
-What is the duration of this song in seconds? Respond ONLY with the number."""
+Respond ONLY with the duration in seconds as a number. For example: 407, 765, 1020.
+Do not respond with minutes:seconds format.
+If you don't know, respond with '0'."""
 
         headers = {
             'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
@@ -203,7 +231,7 @@ What is the duration of this song in seconds? Respond ONLY with the number."""
         data = {
             'model': 'deepseek-chat',
             'messages': [
-                {'role': 'system', 'content': 'You are a music assistant that answers questions about songs. Respond ONLY with a number (duration in seconds).'},
+                {'role': 'system', 'content': 'You are a music expert. Respond ONLY with a number (duration in seconds). Do not add any other text.'},
                 {'role': 'user', 'content': prompt}
             ],
             'temperature': 0.1,
@@ -361,8 +389,8 @@ def fetch_duration_with_fallback(artist_name: str, song_title: str) -> Tuple[Opt
     Fetch duration using multiple sources in order:
     1. Last.fm
     2. Spotify
-    3. Gemma 4
-    4. DeepSeek (last resort)
+    3. Gemma 4 (with validation)
+    4. DeepSeek (if Gemma fails or returns suspicious value)
 
     Returns (duration_seconds, source)
     """
@@ -376,12 +404,12 @@ def fetch_duration_with_fallback(artist_name: str, song_title: str) -> Tuple[Opt
     if duration:
         return duration, 'spotify'
 
-    # 3. Try Gemma 4
+    # 3. Try Gemma 4 (may return None if duration < 60s)
     duration = fetch_duration_from_gemma4(artist_name, song_title)
     if duration:
         return duration, 'gemma4'
 
-    # 4. Try DeepSeek (last resort)
+    # 4. Try DeepSeek (last resort, especially for complex titles)
     duration = fetch_duration_from_deepseek(artist_name, song_title)
     if duration:
         return duration, 'deepseek'
@@ -434,12 +462,9 @@ def process_scrobble(conn, scrobble_data):
         print(f"    ⚠️ Artist not found: {artist_name}")
         return
 
-    # ============================================================
-    # OPTIMIZATION: Skip if song already exists
-    # No API calls, no overwriting, just skip.
-    # ============================================================
+    # Skip if song already exists
     if song_exists(conn, id_artist, song_title):
-        return  # Already exists, skip entirely
+        return
 
     # Fetch duration with fallbacks (only for new songs)
     print(f"    🎵 New song: {song_title}")
@@ -452,7 +477,7 @@ def process_scrobble(conn, scrobble_data):
     else:
         print(f"      ⏱️ Duration: Unknown [source: none]")
 
-    # Save song (only if it doesn't exist)
+    # Save song
     save_song(conn, id_artist, song_title, duration, source)
 
 
@@ -477,7 +502,6 @@ def fetch_all_scrobbles(conn, limit: int = 200):
 
     page = 1
     total_processed = 0
-    total_new_songs = 0
 
     while True:
         print(f"📄 Fetching page {page}...")
