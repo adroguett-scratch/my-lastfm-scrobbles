@@ -11,7 +11,8 @@ Duration is fetched from:
 3. Gemma 4 API (fallback 2)
 4. DeepSeek API (fallback 3, last resort)
 
-The first run scans ALL scrobbles. Subsequent runs only fetch new ones (incremental update).
+OPTIMIZATION: Songs are only fetched ONCE. If a song already exists in the database,
+it is skipped entirely (no API calls, no overwriting).
 """
 
 import sqlite3
@@ -42,7 +43,6 @@ DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/'
 SPOTIFY_TOKEN_URL = 'https://accounts.spotify.com/api/token'
 SPOTIFY_API_URL = 'https://api.spotify.com/v1/search'
-GEMMA4_API_URL = 'https://api.google.com/v1/models/gemma-4-26b-a4b-it:generateContent'  # Ajustar según la URL real
 DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions'
 
 # Spotify token cache
@@ -137,10 +137,11 @@ def fetch_duration_from_gemma4(artist_name: str, song_title: str) -> Optional[in
         return None
 
     try:
-        # Using Google GenAI client
-        from google import genai
+        import google.generativeai as genai
 
-        client = genai.Client(api_key=GEMMA4_API_KEY)
+        genai.configure(api_key=GEMMA4_API_KEY)
+
+        model = genai.GenerativeModel('gemma-4-26b-a4b-it')
 
         prompt = f"""You are a music assistant that answers questions about songs. Respond ONLY with a number (duration in seconds).
 
@@ -149,10 +150,9 @@ Song: {song_title}
 
 What is the duration of this song in seconds? Respond ONLY with the number."""
 
-        response = client.models.generate_content(
-            model="gemma-4-26b-a4b-it",
-            contents=prompt,
-            config={
+        response = model.generate_content(
+            prompt,
+            generation_config={
                 'temperature': 1.0,
                 'top_p': 0.95,
                 'top_k': 64,
@@ -254,6 +254,7 @@ def create_schema(conn):
     # Indexes
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_artist ON Song (id_artist)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_title ON Song (title)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_duration ON Song (duration)')
 
     # Table to track the last update timestamp
     cursor.execute('''
@@ -301,10 +302,13 @@ def song_exists(conn, id_artist: int, title: str) -> bool:
 
 
 def save_song(conn, id_artist: int, title: str, duration: Optional[int] = None, source: str = 'unknown'):
-    """Save a song to the database. Returns the song ID."""
+    """
+    Save a song to the database.
+    Returns the song ID if inserted, None if it already exists.
+    """
     cursor = conn.cursor()
 
-    # Check if song exists
+    # Check if song exists - if so, skip (do NOT overwrite)
     if song_exists(conn, id_artist, title):
         return None  # Already exists, skip
 
@@ -410,7 +414,10 @@ def fetch_scrobbles_page(page: int, limit: int = 200, from_timestamp: Optional[i
 
 
 def process_scrobble(conn, scrobble_data):
-    """Process a single scrobble and save the song (if new)."""
+    """
+    Process a single scrobble and save the song (if new).
+    If the song already exists, skip it entirely (no API calls).
+    """
     # Skip if it's the currently playing track (no timestamp)
     if '@attr' in scrobble_data and scrobble_data['@attr'].get('nowplaying') == 'true':
         return
@@ -427,11 +434,14 @@ def process_scrobble(conn, scrobble_data):
         print(f"    ⚠️ Artist not found: {artist_name}")
         return
 
-    # Check if song already exists
+    # ============================================================
+    # OPTIMIZATION: Skip if song already exists
+    # No API calls, no overwriting, just skip.
+    # ============================================================
     if song_exists(conn, id_artist, song_title):
-        return
+        return  # Already exists, skip entirely
 
-    # Fetch duration with fallbacks
+    # Fetch duration with fallbacks (only for new songs)
     print(f"    🎵 New song: {song_title}")
     duration, source = fetch_duration_with_fallback(artist_name, song_title)
 
@@ -442,7 +452,7 @@ def process_scrobble(conn, scrobble_data):
     else:
         print(f"      ⏱️ Duration: Unknown [source: none]")
 
-    # Save song
+    # Save song (only if it doesn't exist)
     save_song(conn, id_artist, song_title, duration, source)
 
 
@@ -467,6 +477,7 @@ def fetch_all_scrobbles(conn, limit: int = 200):
 
     page = 1
     total_processed = 0
+    total_new_songs = 0
 
     while True:
         print(f"📄 Fetching page {page}...")
