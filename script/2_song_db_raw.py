@@ -7,8 +7,9 @@ It retrieves:
 
 Duration is fetched from:
 1. Last.fm API (primary)
-2. Spotify API (fallback)
-3. DeepSeek API (final fallback)
+2. Spotify API (fallback 1)
+3. Gemma 4 API (fallback 2)
+4. DeepSeek API (fallback 3, last resort)
 
 The first run scans ALL scrobbles. Subsequent runs only fetch new ones (incremental update).
 """
@@ -20,7 +21,7 @@ import requests
 import time
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -35,11 +36,13 @@ LASTFM_API_KEY = os.environ.get('LASTFM_API_KEY')
 LASTFM_USER = os.environ.get('LASTFM_USER')
 SPOTIFY_CLIENT_ID = os.environ.get('SPOTIFY_CLIENT_ID')
 SPOTIFY_CLIENT_SECRET = os.environ.get('SPOTIFY_CLIENT_SECRET')
+GEMMA4_API_KEY = os.environ.get('GEMMA4_API_KEY')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 
 LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/'
 SPOTIFY_TOKEN_URL = 'https://accounts.spotify.com/api/token'
 SPOTIFY_API_URL = 'https://api.spotify.com/v1/search'
+GEMMA4_API_URL = 'https://api.google.com/v1/models/gemma-4-26b-a4b-it:generateContent'  # Ajustar según la URL real
 DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions'
 
 # Spotify token cache
@@ -54,37 +57,37 @@ spotify_token_expires = 0
 def get_spotify_token():
     """Get a Spotify access token."""
     global spotify_token, spotify_token_expires
-    
+
     if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
         return None
-    
+
     # Check if token is still valid
     import time as time_module
     if spotify_token and time_module.time() < spotify_token_expires:
         return spotify_token
-    
+
     try:
         import base64
         auth_string = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
         auth_bytes = auth_string.encode('ascii')
         auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
-        
+
         headers = {
             'Authorization': f'Basic {auth_b64}',
             'Content-Type': 'application/x-www-form-urlencoded'
         }
-        
+
         data = {'grant_type': 'client_credentials'}
-        
+
         resp = requests.post(SPOTIFY_TOKEN_URL, headers=headers, data=data, timeout=10)
         resp.raise_for_status()
-        
+
         result = resp.json()
         spotify_token = result['access_token']
         spotify_token_expires = time_module.time() + result['expires_in'] - 60
-        
+
         return spotify_token
-        
+
     except Exception as e:
         print(f"      ⚠️ Spotify token error: {e}")
         return None
@@ -95,7 +98,7 @@ def fetch_duration_from_spotify(artist_name: str, song_title: str) -> Optional[i
     token = get_spotify_token()
     if not token:
         return None
-    
+
     try:
         query = f'artist:{artist_name} track:{song_title}'
         params = {
@@ -103,24 +106,75 @@ def fetch_duration_from_spotify(artist_name: str, song_title: str) -> Optional[i
             'type': 'track',
             'limit': 1
         }
-        
+
         headers = {'Authorization': f'Bearer {token}'}
-        
+
         resp = requests.get(SPOTIFY_API_URL, headers=headers, params=params, timeout=10)
         resp.raise_for_status()
-        
+
         data = resp.json()
         tracks = data.get('tracks', {}).get('items', [])
-        
+
         if tracks:
             duration_ms = tracks[0].get('duration_ms')
             if duration_ms:
                 return duration_ms // 1000  # Convert ms to seconds
-        
+
         return None
-        
+
     except Exception as e:
         print(f"      ⚠️ Spotify error for '{artist_name} - {song_title}': {e}")
+        return None
+
+
+# ============================================
+# GEMMA 4 API FUNCTIONS
+# ============================================
+
+def fetch_duration_from_gemma4(artist_name: str, song_title: str) -> Optional[int]:
+    """Fetch song duration from Gemma 4 API."""
+    if not GEMMA4_API_KEY:
+        return None
+
+    try:
+        # Using Google GenAI client
+        from google import genai
+
+        client = genai.Client(api_key=GEMMA4_API_KEY)
+
+        prompt = f"""You are a music assistant that answers questions about songs. Respond ONLY with a number (duration in seconds).
+
+Artist: {artist_name}
+Song: {song_title}
+
+What is the duration of this song in seconds? Respond ONLY with the number."""
+
+        response = client.models.generate_content(
+            model="gemma-4-26b-a4b-it",
+            contents=prompt,
+            config={
+                'temperature': 1.0,
+                'top_p': 0.95,
+                'top_k': 64,
+            }
+        )
+
+        duration_str = response.text.strip()
+
+        # Extract number from response
+        match = re.search(r'\d+', duration_str)
+        if match:
+            duration = int(match.group())
+            if duration > 0 and duration < 6000:  # Sanity check: less than 100 minutes
+                return duration
+
+        return None
+
+    except ImportError:
+        print(f"      ⚠️ Google GenAI library not installed. Skipping Gemma 4.")
+        return None
+    except Exception as e:
+        print(f"      ⚠️ Gemma 4 error for '{artist_name} - {song_title}': {e}")
         return None
 
 
@@ -132,15 +186,20 @@ def fetch_duration_from_deepseek(artist_name: str, song_title: str) -> Optional[
     """Fetch song duration from DeepSeek API."""
     if not DEEPSEEK_API_KEY:
         return None
-    
+
     try:
-        prompt = f"What is the duration of the song '{song_title}' by {artist_name}? Respond ONLY with the duration in seconds as a number. For example: 407. If you don't know, respond '0'."
-        
+        prompt = f"""You are a music assistant that answers questions about songs. Respond ONLY with a number (duration in seconds).
+
+Artist: {artist_name}
+Song: {song_title}
+
+What is the duration of this song in seconds? Respond ONLY with the number."""
+
         headers = {
             'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
             'Content-Type': 'application/json'
         }
-        
+
         data = {
             'model': 'deepseek-chat',
             'messages': [
@@ -150,22 +209,22 @@ def fetch_duration_from_deepseek(artist_name: str, song_title: str) -> Optional[
             'temperature': 0.1,
             'max_tokens': 20
         }
-        
+
         resp = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=10)
         resp.raise_for_status()
-        
+
         result = resp.json()
         duration_str = result['choices'][0]['message']['content'].strip()
-        
+
         # Extract number from response
         match = re.search(r'\d+', duration_str)
         if match:
             duration = int(match.group())
-            if duration > 0:
+            if duration > 0 and duration < 6000:  # Sanity check: less than 100 minutes
                 return duration
-        
+
         return None
-        
+
     except Exception as e:
         print(f"      ⚠️ DeepSeek error for '{artist_name} - {song_title}': {e}")
         return None
@@ -186,7 +245,7 @@ def create_schema(conn):
             id_artist   INTEGER NOT NULL,
             title       TEXT    NOT NULL,
             duration    INTEGER,  -- Duration in seconds
-            duration_source TEXT, -- Source: 'lastfm', 'spotify', 'deepseek', 'unknown'
+            duration_source TEXT, -- Source: 'lastfm', 'spotify', 'gemma4', 'deepseek', 'unknown'
             last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (id_artist, title)
         )
@@ -244,18 +303,18 @@ def song_exists(conn, id_artist: int, title: str) -> bool:
 def save_song(conn, id_artist: int, title: str, duration: Optional[int] = None, source: str = 'unknown'):
     """Save a song to the database. Returns the song ID."""
     cursor = conn.cursor()
-    
+
     # Check if song exists
     if song_exists(conn, id_artist, title):
         return None  # Already exists, skip
-    
+
     # Insert new song
     cursor.execute('''
         INSERT INTO Song (id_artist, title, duration, duration_source, last_update)
         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
     ''', (id_artist, title, duration, source))
     conn.commit()
-    
+
     return cursor.lastrowid
 
 
@@ -272,50 +331,57 @@ def fetch_duration_from_lastfm(artist_name: str, song_title: str) -> Optional[in
         'api_key': LASTFM_API_KEY,
         'format': 'json'
     }
-    
+
     try:
         resp = requests.get(LASTFM_API_URL, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-        
+
         if 'error' in data:
             return None
-        
+
         track = data.get('track', {})
         duration = track.get('duration')
-        
+
         if duration and duration != '0':
             return int(duration) // 1000  # Convert ms to seconds
-        
+
         return None
-        
+
     except Exception as e:
         return None
 
 
-def fetch_duration_with_fallback(artist_name: str, song_title: str) -> tuple:
+def fetch_duration_with_fallback(artist_name: str, song_title: str) -> Tuple[Optional[int], str]:
     """
     Fetch duration using multiple sources in order:
     1. Last.fm
     2. Spotify
-    3. DeepSeek
+    3. Gemma 4
+    4. DeepSeek (last resort)
+
     Returns (duration_seconds, source)
     """
     # 1. Try Last.fm
     duration = fetch_duration_from_lastfm(artist_name, song_title)
     if duration:
         return duration, 'lastfm'
-    
+
     # 2. Try Spotify
     duration = fetch_duration_from_spotify(artist_name, song_title)
     if duration:
         return duration, 'spotify'
-    
-    # 3. Try DeepSeek
+
+    # 3. Try Gemma 4
+    duration = fetch_duration_from_gemma4(artist_name, song_title)
+    if duration:
+        return duration, 'gemma4'
+
+    # 4. Try DeepSeek (last resort)
     duration = fetch_duration_from_deepseek(artist_name, song_title)
     if duration:
         return duration, 'deepseek'
-    
+
     return None, 'unknown'
 
 
@@ -329,17 +395,17 @@ def fetch_scrobbles_page(page: int, limit: int = 200, from_timestamp: Optional[i
         'limit': limit,
         'page': page
     }
-    
+
     if from_timestamp:
         params['from'] = from_timestamp
-    
+
     resp = requests.get(LASTFM_API_URL, params=params, timeout=30)
     resp.raise_for_status()
     data = resp.json()
-    
+
     if 'error' in data:
         raise RuntimeError(f"Last.fm API error: {data.get('message', data)}")
-    
+
     return data
 
 
@@ -348,34 +414,34 @@ def process_scrobble(conn, scrobble_data):
     # Skip if it's the currently playing track (no timestamp)
     if '@attr' in scrobble_data and scrobble_data['@attr'].get('nowplaying') == 'true':
         return
-    
+
     artist_name = scrobble_data['artist']['#text']
     song_title = scrobble_data['name']
-    
+
     # Get artist ID from artist database
     artist_conn = sqlite3.connect(ARTIST_DB_PATH)
     id_artist = get_artist_id(artist_conn, artist_name)
     artist_conn.close()
-    
+
     if not id_artist:
         print(f"    ⚠️ Artist not found: {artist_name}")
         return
-    
+
     # Check if song already exists
     if song_exists(conn, id_artist, song_title):
         return
-    
+
     # Fetch duration with fallbacks
     print(f"    🎵 New song: {song_title}")
     duration, source = fetch_duration_with_fallback(artist_name, song_title)
-    
+
     if duration:
         minutes = duration // 60
         seconds = duration % 60
         print(f"      ⏱️ Duration: {minutes}:{seconds:02d} ({duration}s) [source: {source}]")
     else:
         print(f"      ⏱️ Duration: Unknown [source: none]")
-    
+
     # Save song
     save_song(conn, id_artist, song_title, duration, source)
 
@@ -387,7 +453,7 @@ def fetch_all_scrobbles(conn, limit: int = 200):
     """
     # Get the last update time from metadata
     last_update = get_last_update_time(conn)
-    
+
     # Convert to UNIX timestamp if exists
     from_timestamp = None
     if last_update:
@@ -398,65 +464,64 @@ def fetch_all_scrobbles(conn, limit: int = 200):
             print("   Fetching only new scrobbles...")
         except ValueError:
             print(f"   ⚠️ Could not parse timestamp: {last_update}. Fetching all scrobbles...")
-    
+
     page = 1
     total_processed = 0
-    total_new_songs = 0
-    
+
     while True:
         print(f"📄 Fetching page {page}...")
-        
+
         try:
             data = fetch_scrobbles_page(page, limit, from_timestamp)
         except Exception as e:
             print(f"❌ Error fetching page {page}: {e}")
             break
-        
+
         tracks = data.get('recenttracks', {}).get('track', [])
-        
+
         if not tracks:
             print("   No more tracks found.")
             break
-        
+
         total_pages = int(data['recenttracks']['@attr']['totalPages'])
-        
+
         # Process each track
         for track in tracks:
             process_scrobble(conn, track)
             total_processed += 1
-        
+
         print(f"   ✅ Page {page}/{total_pages} processed. Total: {total_processed}")
-        
+
         # Check if we've reached the end
         if page >= total_pages:
             break
-        
+
         page += 1
         time.sleep(0.3)  # Respect API rate limits
-    
+
     # Update metadata
     now = datetime.now().isoformat()
     set_last_update_time(conn, now)
-    
+
     return total_processed
 
 
 def get_stats(conn):
     """Get database statistics."""
     cursor = conn.cursor()
-    
+
     cursor.execute('SELECT COUNT(*) FROM Song')
     total_songs = cursor.fetchone()[0]
-    
+
     cursor.execute('SELECT COUNT(*) FROM Song WHERE duration IS NOT NULL')
     songs_with_duration = cursor.fetchone()[0]
-    
+
     cursor.execute('SELECT duration_source, COUNT(*) FROM Song WHERE duration IS NOT NULL GROUP BY duration_source')
     duration_sources = cursor.fetchall()
-    
+
     cursor.execute('SELECT SUM(duration) FROM Song')
     total_duration = cursor.fetchone()[0]
-    
+
     return {
         'total_songs': total_songs,
         'songs_with_duration': songs_with_duration,
@@ -471,29 +536,29 @@ def get_stats(conn):
 
 def create_database():
     """Create and populate the song database."""
-    
+
     print("=" * 60)
     print("SONG DATABASE - RAW DATA FETCHER")
     print("=" * 60)
-    
+
     # Check credentials
     if not LASTFM_API_KEY or not LASTFM_USER:
         print("⚠️ LASTFM_API_KEY / LASTFM_USER not found in environment variables.")
         return
-    
+
     # Check if artist database exists
     if not os.path.exists(ARTIST_DB_PATH):
         print(f"❌ Artist database not found: {ARTIST_DB_PATH}")
         print("   Please run 0_artist_db_raw.py first.")
         return
-    
+
     # Create data directory
     os.makedirs(os.path.dirname(SONG_DB_PATH), exist_ok=True)
-    
+
     # Connect to database
     conn = sqlite3.connect(SONG_DB_PATH)
     create_schema(conn)
-    
+
     # Check if we have existing data
     last_update = get_last_update_time(conn)
     if last_update:
@@ -501,9 +566,9 @@ def create_database():
         print("   Fetching only new songs...")
     else:
         print("📂 New database. Fetching ALL songs...")
-    
+
     print("-" * 60)
-    
+
     # Fetch scrobbles
     try:
         total = fetch_all_scrobbles(conn)
@@ -511,31 +576,31 @@ def create_database():
         print(f"❌ Error fetching scrobbles: {e}")
         conn.close()
         sys.exit(1)
-    
+
     # Get stats
     stats = get_stats(conn)
-    
+
     # Calculate total duration in hours
     total_hours = stats['total_duration_seconds'] // 3600 if stats['total_duration_seconds'] else 0
     remaining_seconds = stats['total_duration_seconds'] % 3600 if stats['total_duration_seconds'] else 0
-    
+
     print("-" * 60)
     print(f"\n✅ Database updated successfully")
     print(f"📁 Location: {SONG_DB_PATH}")
     print(f"📋 Table: Song")
     print(f"🎵 Total songs: {stats['total_songs']}")
     print(f"⏱️  Songs with duration: {stats['songs_with_duration']}")
-    
+
     # Show duration sources
     if stats['duration_sources']:
         print("\n📊 Duration sources:")
         for source, count in stats['duration_sources']:
             print(f"   {source}: {count} songs")
-    
+
     if stats['total_duration_seconds']:
         print(f"\n📊 Total duration: {total_hours}h {remaining_seconds//60}m")
     print("=" * 60)
-    
+
     conn.close()
 
 
