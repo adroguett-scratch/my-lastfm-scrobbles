@@ -297,6 +297,17 @@ def save_filtered_artist(conn, artist_id, name, nationality, genres):
     conn.commit()
 
 
+def get_already_filtered_ids(conn) -> set:
+    """Return the set of id_artist already present in the filtered database.
+
+    Used to skip artists that were already processed in a previous run,
+    so they are never reprocessed or overwritten.
+    """
+    cursor = conn.cursor()
+    cursor.execute('SELECT id_artist FROM Artist')
+    return {row[0] for row in cursor.fetchall()}
+
+
 def get_filtered_stats(conn):
     """Get statistics from the filtered database."""
     cursor = conn.cursor()
@@ -333,17 +344,30 @@ def process_and_filter_artists():
     
     # Create filtered schema
     create_filtered_schema(out_conn)
-    
+
+    # IDs already filtered in a previous run: never touch these again
+    already_filtered = get_already_filtered_ids(out_conn)
+    print(f"⏭️  {len(already_filtered)} artists already filtered (will be skipped)")
+
     # Get all raw artists
     artists = get_raw_artists(raw_conn)
-    print(f"🎵 Found {len(artists)} artists to process")
+    print(f"🎵 Found {len(artists)} artists in raw database")
     print("-" * 60)
-    
+
     processed = 0
-    skipped = 0
-    
+    skipped_existing = 0
+    skipped_no_genres = 0
+
     for artist in artists:
+        artist_id = artist['id']
         name = artist['name']
+
+        # Skip artists that are already in the filtered database
+        if artist_id in already_filtered:
+            print(f"⏭️  Skipping (already filtered): {name}")
+            skipped_existing += 1
+            continue
+
         raw_genres = artist['raw_genres']
         nationality = artist['nationality'] or 'Unknown'
         
@@ -359,11 +383,11 @@ def process_and_filter_artists():
         # Skip if no genres remain after filtering
         if not top_genres:
             print(f"   ⚠️ No genres after filtering")
-            skipped += 1
+            skipped_no_genres += 1
             continue
         
         # Save filtered artist
-        save_filtered_artist(out_conn, artist['id'], name, nationality, top_genres)
+        save_filtered_artist(out_conn, artist_id, name, nationality, top_genres)
         processed += 1
         
         print(f"   ✅ Filtered genres: {top_genres}")
@@ -375,12 +399,13 @@ def process_and_filter_artists():
     total = get_filtered_stats(out_conn)
     
     print("-" * 60)
-    print(f"\n✅ Filtered database created successfully")
+    print(f"\n✅ Filtered database updated successfully")
     print(f"📁 Location: {OUTPUT_DB_PATH}")
     print(f"📋 Table 'Artist' with filtered genres (top 5, all lowercase)")
     print(f"🎵 Total artists in filtered DB: {total}")
-    print(f"   Processed: {processed}")
-    print(f"   Skipped (no genres): {skipped}")
+    print(f"   Newly processed: {processed}")
+    print(f"   Skipped (already filtered): {skipped_existing}")
+    print(f"   Skipped (no genres after filtering): {skipped_no_genres}")
     print("=" * 60)
     
     raw_conn.close()
