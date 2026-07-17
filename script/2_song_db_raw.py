@@ -231,6 +231,17 @@ def create_schema(conn):
         )
     ''')
 
+    # Migration: if Song already existed from an older schema version
+    # (e.g. one with 'playcount' instead of 'duration_source'/'retry_count'),
+    # add the missing columns instead of failing.
+    cursor.execute("PRAGMA table_info(Song)")
+    columns = [row[1] for row in cursor.fetchall()]
+
+    if 'duration_source' not in columns:
+        cursor.execute("ALTER TABLE Song ADD COLUMN duration_source TEXT")
+    if 'retry_count' not in columns:
+        cursor.execute("ALTER TABLE Song ADD COLUMN retry_count INTEGER DEFAULT 0")
+
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_artist ON Song (id_artist)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_title ON Song (title)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_duration ON Song (duration)')
