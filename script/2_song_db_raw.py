@@ -8,11 +8,12 @@ It retrieves:
 Duration is fetched from:
 1. Last.fm API (primary)
 2. Spotify API (fallback 1 - optional)
-3. Gemma 4 API (fallback 2 - with validation for years)
-4. DeepSeek API (fallback 3, last resort)
+3. DeepSeek API (fallback 2 - AI)
 
 OPTIMIZATION: Songs are only fetched ONCE. If a song already exists in the database,
 it is skipped entirely (no API calls, no overwriting).
+
+NEW: Songs with no duration are marked as 'pending' and will be retried on next run.
 """
 
 import sqlite3
@@ -37,7 +38,6 @@ LASTFM_API_KEY = os.environ.get('LASTFM_API_KEY')
 LASTFM_USER = os.environ.get('LASTFM_USER')
 SPOTIFY_CLIENT_ID = os.environ.get('SPOTIFY_CLIENT_ID')
 SPOTIFY_CLIENT_SECRET = os.environ.get('SPOTIFY_CLIENT_SECRET')
-GEMMA4_API_KEY = os.environ.get('GEMMA4_API_KEY')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 
 LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/'
@@ -61,7 +61,6 @@ def get_spotify_token():
     if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
         return None
 
-    # Check if token is still valid
     import time as time_module
     if spotify_token and time_module.time() < spotify_token_expires:
         return spotify_token
@@ -118,7 +117,7 @@ def fetch_duration_from_spotify(artist_name: str, song_title: str) -> Optional[i
         if tracks:
             duration_ms = tracks[0].get('duration_ms')
             if duration_ms:
-                return duration_ms // 1000  # Convert ms to seconds
+                return duration_ms // 1000
 
         return None
 
@@ -128,15 +127,11 @@ def fetch_duration_from_spotify(artist_name: str, song_title: str) -> Optional[i
 
 
 # ============================================
-# GEMMA 4 API FUNCTIONS
+# DEEPSEEK API FUNCTIONS
 # ============================================
 
-def is_suspicious_year_duration(duration: int, artist_name: str, song_title: str) -> bool:
-    """
-    Check if a duration is actually a year (like 1973, 2112, etc.)
-    These are common mistakes from LLMs.
-    """
-    # Common years that appear as song titles or release years
+def is_suspicious_year_duration(duration: int) -> bool:
+    """Check if a duration is actually a year (like 1973, 2112, etc.)"""
     suspicious_years = {
         1920, 1921, 1922, 1923, 1924, 1925, 1926, 1927, 1928, 1929,
         1930, 1931, 1932, 1933, 1934, 1935, 1936, 1937, 1938, 1939,
@@ -152,100 +147,16 @@ def is_suspicious_year_duration(duration: int, artist_name: str, song_title: str
         2030, 2112, 2525, 3000
     }
     
-    # Check if duration matches a year
     if duration in suspicious_years:
         return True
-    
-    # Check if duration is exactly 1973, 2112 (common in Rush's 2112)
     if duration in [1973, 2112, 1974, 1975, 1976, 1977, 1978, 1979]:
         return True
     
     return False
 
 
-def fetch_duration_from_gemma4(artist_name: str, song_title: str) -> Optional[int]:
-    """
-    Fetch song duration from Gemma 4 API.
-    Uses gemma-4-31b-it for better accuracy on complex song titles.
-    """
-    if not GEMMA4_API_KEY:
-        return None
-
-    try:
-        import google.generativeai as genai
-
-        genai.configure(api_key=GEMMA4_API_KEY)
-
-        # Use the more powerful model for better accuracy
-        model = genai.GenerativeModel('gemma-4-31b-it')
-
-        # Clean up the song title for better search
-        clean_title = song_title.strip()
-        clean_title = re.sub(r'\s*[:/]\s*', ' / ', clean_title)
-
-        prompt = f"""You are a music expert assistant. Your task is to find the exact duration of a specific song.
-
-Artist: {artist_name}
-Song: {clean_title}
-
-IMPORTANT: 
-- Respond ONLY with the duration in seconds as a number.
-- For example: 407, 765, 1020
-- Do NOT respond with minutes:seconds format.
-- Do NOT respond with a year (like 1973 or 2112).
-- Do NOT add any other text or explanation.
-- If you don't know the exact duration, respond with '0'.
-
-What is the duration in seconds of "{clean_title}" by {artist_name}?"""
-
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                'temperature': 0.3,
-                'top_p': 0.95,
-                'top_k': 64,
-            }
-        )
-
-        duration_str = response.text.strip()
-
-        # Extract number from response
-        match = re.search(r'\d+', duration_str)
-        if match:
-            duration = int(match.group())
-            
-            # Check if it's a suspicious year
-            if is_suspicious_year_duration(duration, artist_name, song_title):
-                print(f"      ⚠️ Gemma returned a year ({duration}s) instead of duration. Will verify with DeepSeek.")
-                return None  # Force DeepSeek
-            
-            # Gemma sometimes returns 1-6 seconds incorrectly for long songs
-            if duration > 0 and duration < 60:
-                print(f"      ⚠️ Gemma returned suspicious duration: {duration}s (< 1 min). Will verify with DeepSeek.")
-                return None  # Force DeepSeek
-            
-            if duration > 0 and duration < 6000:  # Sanity check: less than 100 minutes
-                return duration
-
-        return None
-
-    except ImportError:
-        print(f"      ⚠️ Google GenAI library not installed. Skipping Gemma 4.")
-        return None
-    except Exception as e:
-        print(f"      ⚠️ Gemma 4 error for '{artist_name} - {song_title}': {e}")
-        return None
-
-
-# ============================================
-# DEEPSEEK API FUNCTIONS
-# ============================================
-
 def fetch_duration_from_deepseek(artist_name: str, song_title: str) -> Optional[int]:
-    """
-    Fetch song duration from DeepSeek API.
-    Used as final verification when Gemma returns suspicious values.
-    """
+    """Fetch song duration from DeepSeek API."""
     if not DEEPSEEK_API_KEY:
         return None
 
@@ -281,17 +192,15 @@ If you don't know, respond with '0'."""
         result = resp.json()
         duration_str = result['choices'][0]['message']['content'].strip()
 
-        # Extract number from response
         match = re.search(r'\d+', duration_str)
         if match:
             duration = int(match.group())
             
-            # Check if it's a suspicious year
-            if is_suspicious_year_duration(duration, artist_name, song_title):
-                print(f"      ⚠️ DeepSeek also returned a year ({duration}s). Marking as unknown.")
+            if is_suspicious_year_duration(duration):
+                print(f"      ⚠️ DeepSeek returned a year ({duration}s) instead of duration.")
                 return None
             
-            if duration > 0 and duration < 6000:
+            if duration > 0 and duration < 6000:  # Sanity check: less than 100 minutes
                 return duration
 
         return None
@@ -306,7 +215,7 @@ If you don't know, respond with '0'."""
 # ============================================
 
 def create_schema(conn):
-    """Creates the Song table."""
+    """Creates the Song table with pending support."""
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -315,7 +224,8 @@ def create_schema(conn):
             id_artist   INTEGER NOT NULL,
             title       TEXT    NOT NULL,
             duration    INTEGER,
-            duration_source TEXT,
+            duration_source TEXT, -- 'lastfm', 'spotify', 'deepseek', 'pending', 'unknown'
+            retry_count INTEGER DEFAULT 0,
             last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (id_artist, title)
         )
@@ -324,6 +234,7 @@ def create_schema(conn):
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_artist ON Song (id_artist)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_title ON Song (title)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_duration ON Song (duration)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_song_retry ON Song (retry_count)')
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Metadata (
@@ -359,25 +270,61 @@ def get_artist_id(conn, artist_name: str) -> Optional[int]:
     return row[0] if row else None
 
 
+def load_artist_map() -> dict:
+    """Loads all artists into memory once, as {name: id_artist}.
+
+    Avoids opening a new sqlite connection to 0_artist_raw.db for every
+    single scrobble, which is very slow on large scan (thousands of scrobbles).
+    """
+    artist_conn = sqlite3.connect(ARTIST_DB_PATH)
+    cursor = artist_conn.cursor()
+    cursor.execute('SELECT id_artist, name FROM Artist')
+    mapping = {name: id_artist for id_artist, name in cursor.fetchall()}
+    artist_conn.close()
+    return mapping
+
+
 def song_exists(conn, id_artist: int, title: str) -> bool:
     cursor = conn.cursor()
     cursor.execute('SELECT id_song FROM Song WHERE id_artist = ? AND title = ?', (id_artist, title))
     return cursor.fetchone() is not None
 
 
-def save_song(conn, id_artist: int, title: str, duration: Optional[int] = None, source: str = 'unknown'):
+def get_pending_songs(conn) -> list:
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id_song, id_artist, title, retry_count
+        FROM Song
+        WHERE duration_source = 'pending' AND retry_count < 3
+        ORDER BY retry_count ASC, last_update ASC
+    ''')
+    return cursor.fetchall()
+
+
+def save_song(conn, id_artist: int, title: str, duration: Optional[int] = None, 
+              source: str = 'unknown', retry_count: int = 0):
     cursor = conn.cursor()
 
     if song_exists(conn, id_artist, title):
         return None
 
     cursor.execute('''
-        INSERT INTO Song (id_artist, title, duration, duration_source, last_update)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ''', (id_artist, title, duration, source))
+        INSERT INTO Song (id_artist, title, duration, duration_source, retry_count, last_update)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ''', (id_artist, title, duration, source, retry_count))
     conn.commit()
 
     return cursor.lastrowid
+
+
+def update_song_duration(conn, id_song: int, duration: Optional[int], source: str):
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE Song
+        SET duration = ?, duration_source = ?, retry_count = retry_count + 1, last_update = CURRENT_TIMESTAMP
+        WHERE id_song = ?
+    ''', (duration, source, id_song))
+    conn.commit()
 
 
 # ============================================
@@ -414,34 +361,24 @@ def fetch_duration_from_lastfm(artist_name: str, song_title: str) -> Optional[in
 
 
 def fetch_duration_with_fallback(artist_name: str, song_title: str) -> Tuple[Optional[int], str]:
-    """
-    Fetch duration using multiple sources in order:
-    1. Last.fm
-    2. Spotify (optional)
-    3. Gemma 4 (with validation for years)
-    4. DeepSeek (last resort)
-    """
+    """Fetch duration using: Last.fm -> Spotify -> DeepSeek"""
+    
     # 1. Try Last.fm
     duration = fetch_duration_from_lastfm(artist_name, song_title)
     if duration:
         return duration, 'lastfm'
 
-    # 2. Try Spotify (optional)
+    # 2. Try Spotify
     duration = fetch_duration_from_spotify(artist_name, song_title)
     if duration:
         return duration, 'spotify'
 
-    # 3. Try Gemma 4 (with validation)
-    duration = fetch_duration_from_gemma4(artist_name, song_title)
-    if duration:
-        return duration, 'gemma4'
-
-    # 4. Try DeepSeek (last resort)
+    # 3. Try DeepSeek (only AI)
     duration = fetch_duration_from_deepseek(artist_name, song_title)
     if duration:
         return duration, 'deepseek'
 
-    return None, 'unknown'
+    return None, 'pending'
 
 
 def fetch_scrobbles_page(page: int, limit: int = 200, from_timestamp: Optional[int] = None):
@@ -467,16 +404,14 @@ def fetch_scrobbles_page(page: int, limit: int = 200, from_timestamp: Optional[i
     return data
 
 
-def process_scrobble(conn, scrobble_data):
+def process_scrobble(conn, scrobble_data, artist_map: dict):
     if '@attr' in scrobble_data and scrobble_data['@attr'].get('nowplaying') == 'true':
         return
 
     artist_name = scrobble_data['artist']['#text']
     song_title = scrobble_data['name']
 
-    artist_conn = sqlite3.connect(ARTIST_DB_PATH)
-    id_artist = get_artist_id(artist_conn, artist_name)
-    artist_conn.close()
+    id_artist = artist_map.get(artist_name)
 
     if not id_artist:
         print(f"    ⚠️ Artist not found: {artist_name}")
@@ -493,9 +428,60 @@ def process_scrobble(conn, scrobble_data):
         seconds = duration % 60
         print(f"      ⏱️ Duration: {minutes}:{seconds:02d} ({duration}s) [source: {source}]")
     else:
-        print(f"      ⏱️ Duration: Unknown [source: none]")
+        print(f"      ⏱️ Duration: Unknown [source: pending] - Will retry on next run")
 
-    save_song(conn, id_artist, song_title, duration, source)
+    retry_count = 0 if source != 'pending' else 0
+    save_song(conn, id_artist, song_title, duration, source, retry_count)
+
+    # Small delay only when the fallback chain was actually used (Spotify/DeepSeek),
+    # to avoid hammering those APIs. Last.fm hits (cheap, fast) don't need a delay.
+    if source in ('spotify', 'deepseek', 'pending'):
+        time.sleep(0.5)
+
+
+def retry_pending_songs(conn, artist_map: dict):
+    pending = get_pending_songs(conn)
+    
+    if not pending:
+        print("   No pending songs to retry.")
+        return 0
+    
+    print(f"   🔄 Retrying {len(pending)} pending songs...")
+    
+    id_to_name = {id_artist: name for name, id_artist in artist_map.items()}
+    
+    retried = 0
+    for id_song, id_artist, title, retry_count in pending:
+        artist_name = id_to_name.get(id_artist)
+        
+        if not artist_name:
+            continue
+        
+        print(f"      🔄 Retry {retry_count + 1}: {artist_name} - {title}")
+        
+        duration, source = fetch_duration_with_fallback(artist_name, title)
+        
+        if duration:
+            minutes = duration // 60
+            seconds = duration % 60
+            print(f"         ✅ Found! {minutes}:{seconds:02d} ({duration}s) [source: {source}]")
+            update_song_duration(conn, id_song, duration, source)
+            retried += 1
+        else:
+            print(f"         ⏳ Still pending...")
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE Song
+                SET retry_count = retry_count + 1, last_update = CURRENT_TIMESTAMP
+                WHERE id_song = ?
+            ''', (id_song,))
+            conn.commit()
+        
+        # Same rate-limit courtesy delay as new songs
+        if source in ('spotify', 'deepseek', 'pending'):
+            time.sleep(0.5)
+    
+    return retried
 
 
 def fetch_all_scrobbles(conn, limit: int = 200):
@@ -510,6 +496,11 @@ def fetch_all_scrobbles(conn, limit: int = 200):
             print("   Fetching only new scrobbles...")
         except ValueError:
             print(f"   ⚠️ Could not parse timestamp: {last_update}. Fetching all scrobbles...")
+
+    # Load all artists once instead of opening a connection per scrobble
+    print("📚 Loading artist map into memory...")
+    artist_map = load_artist_map()
+    print(f"   {len(artist_map)} artists loaded.")
 
     page = 1
     total_processed = 0
@@ -532,7 +523,7 @@ def fetch_all_scrobbles(conn, limit: int = 200):
         total_pages = int(data['recenttracks']['@attr']['totalPages'])
 
         for track in tracks:
-            process_scrobble(conn, track)
+            process_scrobble(conn, track, artist_map)
             total_processed += 1
 
         print(f"   ✅ Page {page}/{total_pages} processed. Total: {total_processed}")
@@ -542,6 +533,11 @@ def fetch_all_scrobbles(conn, limit: int = 200):
 
         page += 1
         time.sleep(0.3)
+
+    print("\n🔄 Retrying pending songs...")
+    retried = retry_pending_songs(conn, artist_map)
+    if retried > 0:
+        print(f"   ✅ Found durations for {retried} pending songs!")
 
     now = datetime.now().isoformat()
     set_last_update_time(conn, now)
@@ -558,6 +554,9 @@ def get_stats(conn):
     cursor.execute('SELECT COUNT(*) FROM Song WHERE duration IS NOT NULL')
     songs_with_duration = cursor.fetchone()[0]
 
+    cursor.execute('SELECT COUNT(*) FROM Song WHERE duration_source = ?', ('pending',))
+    pending_songs = cursor.fetchone()[0]
+
     cursor.execute('SELECT duration_source, COUNT(*) FROM Song WHERE duration IS NOT NULL GROUP BY duration_source')
     duration_sources = cursor.fetchall()
 
@@ -567,6 +566,7 @@ def get_stats(conn):
     return {
         'total_songs': total_songs,
         'songs_with_duration': songs_with_duration,
+        'pending_songs': pending_songs,
         'duration_sources': duration_sources,
         'total_duration_seconds': total_duration
     }
@@ -622,6 +622,7 @@ def create_database():
     print(f"📋 Table: Song")
     print(f"🎵 Total songs: {stats['total_songs']}")
     print(f"⏱️  Songs with duration: {stats['songs_with_duration']}")
+    print(f"⏳ Pending songs (no duration yet): {stats['pending_songs']}")
 
     if stats['duration_sources']:
         print("\n📊 Duration sources:")
