@@ -25,7 +25,6 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install google-generativeai
 
       - name: 📁 Create data directory
         run: mkdir -p data
@@ -36,7 +35,6 @@ jobs:
           LASTFM_USER: ${{ secrets.LASTFM_USER }}
           SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
           SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
-          GEMMA4_API_KEY: ${{ secrets.GEMMA4_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python script/2_song_db_raw.py
 
