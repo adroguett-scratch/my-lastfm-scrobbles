@@ -12,6 +12,7 @@ BEHAVIOR:
 - If artist is new: fetches ALL data
 - If artist exists but missing some data: only fetches missing data
 - If artist has all data: skips entirely
+- id_artist NEVER changes (preserved across updates)
 """
 
 import sqlite3
@@ -50,65 +51,77 @@ def create_schema(conn):
     """Creates the Artist table with genre, nationality and image columns."""
     cursor = conn.cursor()
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Artist (
-            id_artist   INTEGER PRIMARY KEY AUTOINCREMENT,
-            name        TEXT    NOT NULL UNIQUE,
-            nationality TEXT,
-            artist_image_url TEXT,
-            artist_image_source TEXT,
-            genre_1     TEXT,
-            genre_2     TEXT,
-            genre_3     TEXT,
-            genre_4     TEXT,
-            genre_5     TEXT,
-            genre_6     TEXT,
-            genre_7     TEXT,
-            genre_8     TEXT,
-            genre_9     TEXT,
-            genre_10    TEXT,
-            genre_11    TEXT,
-            genre_12    TEXT,
-            genre_13    TEXT,
-            genre_14    TEXT,
-            genre_15    TEXT,
-            last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_artist_name ON Artist (name)')
-
-    # Migration: add columns if they don't exist
+    # Check existing columns
     cursor.execute("PRAGMA table_info(Artist)")
-    columns = [row[1] for row in cursor.fetchall()]
+    existing_columns = [row[1] for row in cursor.fetchall()]
 
-    if 'nationality' not in columns:
+    # If table doesn't exist, create it from scratch
+    if 'Artist' not in [t[0] for t in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]:
+        cursor.execute('''
+            CREATE TABLE Artist (
+                id_artist   INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT    NOT NULL UNIQUE,
+                nationality TEXT,
+                artist_image_url TEXT,
+                artist_image_source TEXT,
+                genre_1     TEXT,
+                genre_2     TEXT,
+                genre_3     TEXT,
+                genre_4     TEXT,
+                genre_5     TEXT,
+                genre_6     TEXT,
+                genre_7     TEXT,
+                genre_8     TEXT,
+                genre_9     TEXT,
+                genre_10    TEXT,
+                genre_11    TEXT,
+                genre_12    TEXT,
+                genre_13    TEXT,
+                genre_14    TEXT,
+                genre_15    TEXT,
+                last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_artist_name ON Artist (name)')
+        conn.commit()
+        return
+
+    # --- MIGRATION: Add missing columns without dropping data ---
+    
+    if 'nationality' not in existing_columns:
         cursor.execute('ALTER TABLE Artist ADD COLUMN nationality TEXT')
+        print("   ✅ Added column: nationality")
 
-    if 'artist_image_url' not in columns:
+    if 'artist_image_url' not in existing_columns:
         cursor.execute('ALTER TABLE Artist ADD COLUMN artist_image_url TEXT')
+        print("   ✅ Added column: artist_image_url")
 
-    if 'artist_image_source' not in columns:
+    if 'artist_image_source' not in existing_columns:
         cursor.execute('ALTER TABLE Artist ADD COLUMN artist_image_source TEXT')
+        print("   ✅ Added column: artist_image_source")
 
-    if 'genre' in columns and 'genre_1' not in columns:
+    if 'genre' in existing_columns and 'genre_1' not in existing_columns:
         cursor.execute('ALTER TABLE Artist RENAME COLUMN genre TO genre_1')
+        print("   ✅ Renamed column: genre → genre_1")
         cursor.execute("PRAGMA table_info(Artist)")
-        columns = [row[1] for row in cursor.fetchall()]
+        existing_columns = [row[1] for row in cursor.fetchall()]
 
     for n in range(1, 16):
         col = f'genre_{n}'
-        if col not in columns:
+        if col not in existing_columns:
             cursor.execute(f'ALTER TABLE Artist ADD COLUMN {col} TEXT')
+            print(f"   ✅ Added column: {col}")
+
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_artist_name'")
+    if not cursor.fetchone():
+        cursor.execute('CREATE INDEX idx_artist_name ON Artist (name)')
+        print("   ✅ Added index: idx_artist_name")
 
     conn.commit()
 
 
 def get_artist_status(conn, name):
-    """
-    Check what data an artist has.
-    Returns a dict with boolean flags for what's missing.
-    """
+    """Check what data an artist has. Returns a dict with boolean flags for what's missing."""
     cursor = conn.cursor()
     cursor.execute('''
         SELECT 
@@ -125,11 +138,9 @@ def get_artist_status(conn, name):
     if not row:
         return {'exists': False}
     
-    # Check what's missing
     missing_nationality = row[0] is None or row[0] == '' or row[0] == 'Unknown'
     missing_image = row[1] is None or row[1] == ''
     
-    # Check genres
     genres = list(row[2:])
     has_any_genre = any(g is not None and g != '' for g in genres)
     
@@ -145,6 +156,44 @@ def get_artist_status(conn, name):
 # ============================================
 # IMAGE FETCHING FUNCTIONS
 # ============================================
+
+def is_generic_image(url):
+    """
+    Check if an image URL is a generic/placeholder image.
+    Returns True if the image is generic (should be discarded).
+    """
+    if not url:
+        return True
+    
+    url_lower = url.lower()
+    
+    # Last.fm generic placeholder patterns
+    generic_patterns = [
+        'lastfm.freetls.fastly.net/i/u/',
+        '2a96fbd4b0e3e8c4',
+        'avatar170s',
+        'default_artist',
+        'placeholder',
+        'noimage',
+        'generic',
+        'unknown'
+    ]
+    
+    for pattern in generic_patterns:
+        if pattern in url_lower:
+            return True
+    
+    # Check if URL is too short or looks like a placeholder
+    if len(url) < 20:
+        return True
+    
+    # Check if URL contains only generic numbers
+    if re.match(r'^https?://[^/]+/\d+x\d+/[a-f0-9]+\.(jpg|png|gif)$', url_lower):
+        # This might be a generic avatar
+        return True
+    
+    return False
+
 
 def get_artist_image_from_lastfm(artist_name):
     """Fetches the artist image URL from Last.fm."""
@@ -166,10 +215,15 @@ def get_artist_image_from_lastfm(artist_name):
         artist = data.get('artist', {})
         images = artist.get('image', [])
 
-        for img in images:
-            if img.get('size') == 'extralarge':
-                return img.get('#text')
-
+        # Try to get the largest image first
+        for size in ['extralarge', 'mega', 'large']:
+            for img in images:
+                if img.get('size') == size:
+                    url = img.get('#text')
+                    if url and not is_generic_image(url):
+                        return url
+        
+        # If no good image found, return None
         return None
 
     except Exception as e:
@@ -187,7 +241,9 @@ def get_artist_image_from_deezer(artist_name):
 
         artists = data.get('data', [])
         if artists:
-            return artists[0].get('picture_big')
+            url = artists[0].get('picture_big')
+            if url and not is_generic_image(url):
+                return url
 
         return None
 
@@ -231,7 +287,8 @@ IMPORTANT:
         image_url = result['choices'][0]['message']['content'].strip()
 
         if image_url and image_url != 'NONE' and image_url.startswith('http'):
-            return image_url
+            if not is_generic_image(image_url):
+                return image_url
 
         return None
 
@@ -249,17 +306,17 @@ def get_artist_image(artist_name):
     """
     # 1. Try Last.fm
     image = get_artist_image_from_lastfm(artist_name)
-    if image:
+    if image and not is_generic_image(image):
         return image, 'lastfm'
 
     # 2. Try Deezer
     image = get_artist_image_from_deezer(artist_name)
-    if image:
+    if image and not is_generic_image(image):
         return image, 'deezer'
 
     # 3. Try DeepSeek (last resort)
     image = get_artist_image_from_deepseek(artist_name)
-    if image:
+    if image and not is_generic_image(image):
         return image, 'deepseek'
 
     return None, None
@@ -364,7 +421,7 @@ def get_nationality_from_deepseek(artist_name):
 # ============================================
 
 def update_artist(conn, name, genres, nationality, image_url, image_source):
-    """Updates an artist's data in the database."""
+    """Updates an artist's data in the database. Preserves id_artist."""
     genre_columns = [f'genre_{n}' for n in range(1, 16)]
     placeholders = ', '.join(['?'] * len(genre_columns))
     set_clause = ', '.join([f'{c} = excluded.{c}' for c in genre_columns])
@@ -384,26 +441,21 @@ def update_artist(conn, name, genres, nationality, image_url, image_source):
 
 
 def update_missing_data(conn, name, status):
-    """
-    Intelligently update only missing data for an artist.
-    Returns a dict with what was updated.
-    """
+    """Intelligently update only missing data for an artist. Preserves id_artist."""
     updated = {
         'nationality': False,
         'image': False,
         'genres': False
     }
     
-    # 1. Update nationality if missing
     if status['missing_nationality']:
         print(f"    🏳️ Fetching nationality...")
         nationality = get_nationality_from_deepseek(name)
         print(f"    📍 Nationality: {nationality}")
         updated['nationality'] = True
     else:
-        nationality = None  # Will be filled from existing data
+        nationality = None
     
-    # 2. Update image if missing
     if status['missing_image']:
         print(f"    🖼️ Fetching image...")
         image_url, image_source = get_artist_image(name)
@@ -418,7 +470,6 @@ def update_missing_data(conn, name, status):
         image_url = None
         image_source = None
     
-    # 3. Update genres if missing
     if status['missing_genres']:
         print(f"    🏷️ Fetching genres...")
         genres = get_genres_from_lastfm(name)
@@ -427,12 +478,10 @@ def update_missing_data(conn, name, status):
     else:
         genres = None
     
-    # If nothing was missing, skip
     if not any(updated.values()):
         print(f"    ✅ Already complete. Skipping.")
         return updated
     
-    # Get existing data to merge with missing data
     cursor = conn.cursor()
     cursor.execute('''
         SELECT nationality, artist_image_url, artist_image_source,
@@ -447,19 +496,25 @@ def update_missing_data(conn, name, status):
     if not row:
         return updated
     
-    # Merge: use existing values if not updated, otherwise use new values
     final_nationality = nationality if updated['nationality'] else row[0]
     final_image_url = image_url if updated['image'] else row[1]
     final_image_source = image_source if updated['image'] else row[2]
     
-    final_genres = list(row[3:])  # Start with existing genres
+    final_genres = list(row[3:])
     if updated['genres']:
-        final_genres = genres  # Replace with new genres
+        final_genres = genres
     
-    # Save the merged data
     update_artist(conn, name, final_genres, final_nationality, final_image_url, final_image_source)
     
     return updated
+
+
+def get_artist_id(conn, name):
+    """Helper function to get an artist's ID."""
+    cursor = conn.cursor()
+    cursor.execute('SELECT id_artist FROM Artist WHERE name = ?', (name,))
+    row = cursor.fetchone()
+    return row[0] if row else None
 
 
 # ============================================
@@ -472,6 +527,7 @@ def create_database():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
 
+    print("📋 Checking database schema...")
     create_schema(conn)
 
     if not LASTFM_API_KEY or not LASTFM_USER:
@@ -498,14 +554,11 @@ def create_database():
     for i, name in enumerate(artists, start=1):
         print(f"\n  [{i}/{len(artists)}] {name}")
 
-        # Check current status of the artist
         status = get_artist_status(conn, name)
 
         if not status['exists']:
-            # NEW ARTIST: fetch everything
             print(f"    🆕 New artist. Fetching all data...")
             
-            # Get all data
             print(f"    🏳️ Fetching nationality...")
             nationality = get_nationality_from_deepseek(name)
             print(f"    📍 Nationality: {nationality}")
@@ -521,17 +574,23 @@ def create_database():
             genres = get_genres_from_lastfm(name)
             print(f"    📋 Genres found: {len([g for g in genres if g])} tags")
             
-            # Save all data
             update_artist(conn, name, genres, nationality, image_url, image_source)
             new_count += 1
-            print(f"    ✅ New artist added")
+            print(f"    ✅ New artist added (ID: {get_artist_id(conn, name)})")
 
         elif status['needs_update']:
-            # EXISTING ARTIST WITH MISSING DATA: only fetch what's missing
             print(f"    🔄 Updating missing data...")
+            
+            current_id = get_artist_id(conn, name)
+            
             updated = update_missing_data(conn, name, status)
             
-            # Print what was updated
+            new_id = get_artist_id(conn, name)
+            if current_id == new_id:
+                print(f"    ✅ ID preserved: {current_id}")
+            else:
+                print(f"    ⚠️ WARNING: ID changed from {current_id} to {new_id}!")
+            
             updated_fields = []
             if updated['nationality']:
                 updated_fields.append('nationality')
@@ -544,7 +603,6 @@ def create_database():
             updated_count += 1
 
         else:
-            # COMPLETE ARTIST: skip
             print(f"    ✅ Already complete. Skipping.")
             skipped_count += 1
 
