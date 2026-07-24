@@ -14,22 +14,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: |
+          pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Create data directory
+      - name: 📁 Create data directory
         run: mkdir -p data
 
-      - name: Run artist database update
+      - name: 🎵 Run artist database update
         env:
           LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
           LASTFM_USER: ${{ secrets.LASTFM_USER }}
@@ -37,17 +38,17 @@ jobs:
         run: |
           python script/0_artist_db_raw.py
 
-      - name: Commit and push database
+      - name: 📤 Upload database as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: artist-database-raw
+          path: data/0_artist_raw.db
+          retention-days: 7
+
+      - name: 💾 Commit and push database
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add data/0_artist_raw.db
           git diff --staged --quiet || git commit -m "Actualizar 0_artist_raw.db con artistas de Last.fm [skip ci]"
           git push
-
-      - name: Upload database as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: artist-database-raw
-          path: data/0_artist_raw.db
-          retention-days: 7
